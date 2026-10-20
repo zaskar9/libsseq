@@ -96,7 +96,20 @@ std::vector<std::vector<CanonicalEvent>> canonicalSmf(const std::vector<std::uin
             }
             ev.emplace_back(time, std::move(bytes));
         }
-        std::ranges::stable_sort(ev);
+        // Explicit element-wise comparison: GCC 13 reports a false -Wstringop-overread for the
+        // memcmp behind vector's operator< here.
+        std::ranges::stable_sort(ev, [](const CanonicalEvent& x, const CanonicalEvent& y) {
+            if (x.first != y.first) {
+                return x.first < y.first;
+            }
+            const std::size_t n = std::min(x.second.size(), y.second.size());
+            for (std::size_t i = 0; i < n; ++i) {
+                if (x.second[i] != y.second[i]) {
+                    return x.second[i] < y.second[i];
+                }
+            }
+            return x.second.size() < y.second.size();
+        });
         out.push_back(std::move(ev));
     }
     return out;
