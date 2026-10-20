@@ -1,32 +1,40 @@
-// Corpus tests: run against the Cakewalk reference files (not part of the repository).
+// Corpus tests: compare libsseq against the files Cakewalk Apprentice 1.04 saved for the
+// corpus songs (tests/data, see tests/data/README.md).
 //
-//   sseq_corpus_tests <dir>   where <dir> holds expanded/*.WRK and
-//                             analysis/wine-exploration/saved-files/*.wrk / *.mid
+//   sseq_corpus_tests <tests/data dir>
+//
+// For every song in tests/corpus/songs.cpp:
+//   src/NAME.WRK      written by libsseq (gencorpus); must equal what the library writes now
+//   app/NAME.WRK      the same song after Apprentice loaded and saved it: byte-identical round
+//                     trip, idempotent normalization, and the model must match the song
+//   app/NAME.MID      Apprentice's MIDI export of it: our export must have the same content
+//   mid2wrk/NAME.WRK  Apprentice's import of that MIDI file: our import must match its model
 #include "check.hpp"
+#include "corpus/songs.hpp"
 #include "sseq/sseq.hpp"
 
 #include <algorithm>
-#include <cctype>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
 using namespace sseq;
 
-static std::vector<std::uint8_t> slurp(const fs::path& p) {
+namespace {
+
+std::vector<std::uint8_t> slurp(const fs::path& p) {
     std::ifstream in(p, std::ios::binary);
-    return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
-static std::string lower(std::string s) {
-    std::ranges::transform(s, s.begin(), [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return s;
-}
-
-static long firstDifference(const std::vector<std::uint8_t>& a, const std::vector<std::uint8_t>& b) {
+long firstDifference(const std::vector<std::uint8_t>& a, const std::vector<std::uint8_t>& b) {
     const auto [ia, ib] = std::ranges::mismatch(a, b);
     if (ia == a.end() && ib == b.end()) {
         return -1;
@@ -38,7 +46,7 @@ static long firstDifference(const std::vector<std::uint8_t>& a, const std::vecto
 // sorted by their bytes, so that the order of simultaneous events does not matter.
 using CanonicalEvent = std::pair<Tick, std::vector<std::uint8_t>>;
 
-static std::vector<std::vector<CanonicalEvent>> canonicalSmf(const std::vector<std::uint8_t>& b) {
+std::vector<std::vector<CanonicalEvent>> canonicalSmf(const std::vector<std::uint8_t>& b) {
     std::vector<std::vector<CanonicalEvent>> out;
     std::size_t o = 14;
     const auto readVlq = [&b](std::size_t& p) {
@@ -94,174 +102,282 @@ static std::vector<std::vector<CanonicalEvent>> canonicalSmf(const std::vector<s
     return out;
 }
 
-static bool sameEvents(const Track& a, const Track& b) {
-    if (a.events.size() != b.events.size())
+/// Apprentice stores a Wave payload in a 32-byte-granular block and saves the whole block.
+std::vector<std::uint8_t> padWave(std::vector<std::uint8_t> p) {
+    p.resize((p.size() + 31) / 32 * 32, 0);
+    return p;
+}
+
+bool sameEvent(const Event& x, const Event& y) {
+    const bool samePayload =
+        x.payload == y.payload ||
+        (x.kind == EventKind::Wave && (padWave(x.payload) == y.payload || x.payload == padWave(y.payload)));
+    return x.time == y.time && x.kind == y.kind && x.channel == y.channel && x.data1 == y.data1 && x.data2 == y.data2 &&
+           x.duration == y.duration && samePayload;
+}
+
+/// Events of a track in canonical order: by time, then by a total order on the fields, so that
+/// the order of simultaneous events does not matter.
+std::vector<Event> canonicalEvents(std::vector<Event> ev) {
+    std::ranges::stable_sort(ev, [](const Event& a, const Event& b) {
+        return std::tie(a.time, a.kind, a.channel, a.data1, a.data2, a.duration, a.payload) <
+               std::tie(b.time, b.kind, b.channel, b.data1, b.data2, b.duration, b.payload);
+    });
+    return ev;
+}
+
+bool sameEvents(const Track& a, const Track& b, const std::string& what) {
+    const std::vector<Event> ea = canonicalEvents(a.events);
+    const std::vector<Event> eb = canonicalEvents(b.events);
+    if (ea.size() != eb.size()) {
+        std::printf("FAIL %s: track %d has %zu events, expected %zu\n", what.c_str(), a.number + 1, ea.size(),
+                    eb.size());
         return false;
-    for (std::size_t i = 0; i < a.events.size(); ++i) {
-        const Event &x = a.events[i], &y = b.events[i];
-        if (x.time != y.time || x.kind != y.kind || x.channel != y.channel || x.data1 != y.data1 ||
-            x.data2 != y.data2 || x.duration != y.duration || x.payload != y.payload)
+    }
+    for (std::size_t i = 0; i < ea.size(); ++i) {
+        if (!sameEvent(ea[i], eb[i])) {
+            std::printf("FAIL %s: track %d event %zu differs (t=%lld kind=%d d1=%d d2=%d dur=%lld vs t=%lld kind=%d "
+                        "d1=%d d2=%d dur=%lld)\n",
+                        what.c_str(), a.number + 1, i, static_cast<long long>(ea[i].time), static_cast<int>(ea[i].kind),
+                        ea[i].data1, ea[i].data2, static_cast<long long>(ea[i].duration),
+                        static_cast<long long>(eb[i].time), static_cast<int>(eb[i].kind), eb[i].data1, eb[i].data2,
+                        static_cast<long long>(eb[i].duration));
             return false;
+        }
     }
     return true;
 }
 
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage): needs #field for the message
+#define CHECK_FIELD(what, a, b, field)                                                                                 \
+    do {                                                                                                               \
+        ++test::checks;                                                                                                \
+        if (!((a).field == (b).field)) {                                                                               \
+            ++test::failures;                                                                                          \
+            std::printf("FAIL %s: %s differs (%s vs %s)\n", (what).c_str(), #field, test::str((a).field).c_str(),      \
+                        test::str((b).field).c_str());                                                                 \
+        }                                                                                                              \
+    } while (0)
+
+std::string opt(const std::optional<int>& v) {
+    return v ? std::to_string(*v) : "none";
+}
+std::string opt(const std::optional<std::uint8_t>& v) {
+    return v ? std::to_string(*v) : "none";
+}
+
+/// Compares the song Apprentice saved (`got`) with the song it was given (`want`).
+void compareWithSource(const std::string& what, const Song& got, const Song& want, const bool fromApprentice) {
+    CHECK_FIELD(what, got, want, ppq);
+    CHECK_FIELD(what, got, want, tracks.size());
+    for (std::size_t i = 0; i < std::min(got.tracks.size(), want.tracks.size()); ++i) {
+        const Track& g = got.tracks[i];
+        const Track& w = want.tracks[i];
+        const std::string where = what + " track " + std::to_string(w.number + 1);
+        CHECK_FIELD(where, g, w, number);
+        CHECK_FIELD(where, g, w, name);
+        CHECK_FIELD(where, g, w, port);
+        CHECK_FIELD(where, g, w, keyPlus);
+        CHECK_FIELD(where, g, w, velPlus);
+        CHECK_FIELD(where, g, w, muted);
+        CHECK_FIELD(where, g, w, loop);
+        ++test::checks;
+        if (opt(g.channel) != opt(w.channel) || opt(g.patch) != opt(w.patch) || opt(g.volume) != opt(w.volume) ||
+            opt(g.pan) != opt(w.pan) || opt(g.reps) != opt(w.reps) || opt(g.timePlus) != opt(w.timePlus)) {
+            ++test::failures;
+            std::printf(
+                "FAIL %s: parameters differ (chan %s/%s patch %s/%s vol %s/%s pan %s/%s reps %s/%s time+ %s/%s)\n",
+                where.c_str(), opt(g.channel).c_str(), opt(w.channel).c_str(), opt(g.patch).c_str(),
+                opt(w.patch).c_str(), opt(g.volume).c_str(), opt(w.volume).c_str(), opt(g.pan).c_str(),
+                opt(w.pan).c_str(), opt(g.reps).c_str(), opt(w.reps).c_str(), opt(g.timePlus).c_str(),
+                opt(w.timePlus).c_str());
+        }
+        ++test::checks;
+        if (!sameEvents(g, w, where)) {
+            ++test::failures;
+        }
+    }
+    CHECK_FIELD(what, got, want, tempoMap.entries.size());
+    for (std::size_t i = 0; i < std::min(got.tempoMap.entries.size(), want.tempoMap.entries.size()); ++i) {
+        CHECK_FIELD(what, got.tempoMap.entries[i], want.tempoMap.entries[i], time);
+        CHECK_FIELD(what, got.tempoMap.entries[i], want.tempoMap.entries[i], bpm100);
+    }
+    CHECK_FIELD(what, got, want, meterMap.entries.size());
+    for (std::size_t i = 0; i < std::min(got.meterMap.entries.size(), want.meterMap.entries.size()); ++i) {
+        CHECK_FIELD(what, got.meterMap.entries[i], want.meterMap.entries[i], measure);
+        CHECK_FIELD(what, got.meterMap.entries[i], want.meterMap.entries[i], numerator);
+        CHECK_FIELD(what, got.meterMap.entries[i], want.meterMap.entries[i], denominatorLog2);
+    }
+    CHECK_FIELD(what, got, want, keyMap.size());
+    for (std::size_t i = 0; i < std::min(got.keyMap.size(), want.keyMap.size()); ++i) {
+        CHECK_FIELD(what, got.keyMap[i], want.keyMap[i], measure);
+        CHECK_FIELD(what, got.keyMap[i], want.keyMap[i], alterations);
+    }
+    CHECK_FIELD(what, got, want, markers.size());
+    for (std::size_t i = 0; i < std::min(got.markers.size(), want.markers.size()); ++i) {
+        if (fromApprentice && want.markers[i].smpteLocked) {
+            // Apprentice converts a locked marker to whole frames and back, so its tick moves to
+            // the nearest frame boundary.
+            const TempoMap& tm = want.tempoMap;
+            const Timecode& tc = want.timecode;
+            const double fps = tc.dropFrame() ? 30000.0 / 1001.0 : tc.nominalFps();
+            const std::int64_t frames = std::llround(tm.tickToSeconds(want.markers[i].time) * fps);
+            const Tick expected = tm.secondsToTick(tc.framesToSeconds(frames));
+            ++test::checks;
+            if (std::llabs(got.markers[i].time - expected) > 1) {
+                ++test::failures;
+                std::printf("FAIL %s: locked marker %zu at %lld, expected %lld (from %lld)\n", what.c_str(), i,
+                            static_cast<long long>(got.markers[i].time), static_cast<long long>(expected),
+                            static_cast<long long>(want.markers[i].time));
+            }
+        } else {
+            CHECK_FIELD(what, got.markers[i], want.markers[i], time);
+        }
+        CHECK_FIELD(what, got.markers[i], want.markers[i], name);
+        CHECK_FIELD(what, got.markers[i], want.markers[i], smpteLocked);
+    }
+    CHECK_FIELD(what, got, want, timecode.offsetFrames);
+    CHECK_FIELD(what, got, want, timecode.nominalFps());
+    CHECK_FIELD(what, got, want, metronome.port);
+    CHECK_FIELD(what, got, want, metronome.channel);
+    CHECK_FIELD(what, got, want, metronome.key);
+    CHECK_FIELD(what, got, want, metronome.velocity);
+    CHECK_FIELD(what, got, want, metronome.duration);
+    CHECK_FIELD(what, got, want, thru.mode);
+    CHECK_FIELD(what, got, want, thru.port);
+    CHECK_FIELD(what, got, want, thru.keyPlus);
+    CHECK_FIELD(what, got, want, thru.velPlus);
+    CHECK_FIELD(what, got, want, commentsText());
+    CHECK_FIELD(what, got, want, sysxBanks.size());
+    for (std::size_t i = 0; i < std::min(got.sysxBanks.size(), want.sysxBanks.size()); ++i) {
+        CHECK_FIELD(what, got.sysxBanks[i], want.sysxBanks[i], name);
+        CHECK_FIELD(what, got.sysxBanks[i], want.sysxBanks[i], data);
+    }
+    // VARS: the known flags; Apprentice rewrites some other bytes (Now, end-all time, ...).
+    CHECK_FIELD(what, got, want, vars.zeroControllers());
+    CHECK_FIELD(what, got, want, vars.sendSpp());
+    CHECK_FIELD(what, got, want, vars.useContinue());
+    CHECK_FIELD(what, got, want, vars.patchSearchBack());
+    CHECK_FIELD(what, got, want, vars.metronomePlayback());
+    CHECK_FIELD(what, got, want, vars.metronomeRecording());
+    CHECK_FIELD(what, got, want, vars.metronomeAccent());
+    CHECK_FIELD(what, got, want, vars.countIn());
+    CHECK_FIELD(what, got, want, vars.sppLocateDelay());
+    CHECK_FIELD(what, got, want, vars.transmitMidiSync());
+}
+
+} // namespace
+
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::printf("usage: sseq_corpus_tests <data dir>\n");
+        std::printf("usage: sseq_corpus_tests <tests/data dir>\n");
         return 2;
     }
-    fs::path root = argv[1];
-    fs::path expanded = root / "expanded", saved = root / "analysis" / "wine-exploration" / "saved-files";
-    if (!fs::exists(expanded)) {
-        std::printf("no reference files at %s, skipping\n", expanded.string().c_str());
-        return 0;
-    }
+    const fs::path data = argv[1];
+    const fs::path src = data / "src";
+    const fs::path app = data / "app";
+    const fs::path mid2wrk = data / "mid2wrk";
+    int songs = 0;
 
-    std::vector<fs::path> wrks;
-    for (const fs::path& dir : {expanded, saved})
-        if (fs::exists(dir))
-            for (auto& e : fs::directory_iterator(dir))
-                if (lower(e.path().extension().string()) == ".wrk")
-                    wrks.push_back(e.path());
-    std::sort(wrks.begin(), wrks.end());
-    CHECK(wrks.size() >= 5);
-
-    // 1. Byte-identical round trip in Preserve mode, idempotent Normalize mode.
-    for (const fs::path& p : wrks) {
-        std::vector<std::uint8_t> in = slurp(p);
-        Song s;
-        try {
-            s = wrk::read(in);
-        } catch (const Error& e) {
-            std::printf("FAIL read %s: %s\n", p.filename().string().c_str(), e.what());
-            ++test::failures;
+    for (const corpus::CorpusSong& c : corpus::allSongs()) {
+        const std::string name = c.name;
+        const fs::path srcFile = src / (name + ".WRK");
+        const fs::path appFile = app / (name + ".WRK");
+        const fs::path midFile = app / (name + ".MID");
+        const fs::path importFile = mid2wrk / (name + ".WRK");
+        if (!fs::exists(srcFile)) {
+            std::printf("skip %s: no source file\n", name.c_str());
             continue;
         }
-        std::vector<std::uint8_t> out = wrk::write(s, wrk::WriteMode::Preserve);
-        const long d = firstDifference(in, out);
+        ++songs;
+
+        // 1. The generator output is reproducible.
+        ++test::checks;
+        if (wrk::write(c.song, wrk::WriteMode::Normalize) != slurp(srcFile)) {
+            ++test::failures;
+            std::printf("FAIL %s: src file differs from what the library writes now (regenerate with gencorpus)\n",
+                        name.c_str());
+        }
+        // The source file reads back as the song it was written from.
+        compareWithSource(name + " (src)", wrk::readFile(srcFile.string()), c.song, false);
+
+        if (!fs::exists(appFile)) {
+            std::printf("ok   %s (source only; no Apprentice files)\n", name.c_str());
+            continue;
+        }
+
+        // 2. Apprentice's save of the song: byte-identical round trip, idempotent normalization,
+        //    and the same model as the source song.
+        const std::vector<std::uint8_t> appBytes = slurp(appFile);
+        Song appSong;
+        try {
+            appSong = wrk::read(appBytes);
+        } catch (const Error& e) {
+            ++test::checks;
+            ++test::failures;
+            std::printf("FAIL %s: cannot read app file: %s\n", name.c_str(), e.what());
+            continue;
+        }
+        const long d = firstDifference(appBytes, wrk::write(appSong, wrk::WriteMode::Preserve));
         ++test::checks;
         if (d >= 0) {
             ++test::failures;
-            std::printf("FAIL round trip %s differs at byte %ld (in %zu, out %zu)\n", p.filename().string().c_str(), d,
-                        in.size(), out.size());
+            std::printf("FAIL %s: round trip of app file differs at byte %ld\n", name.c_str(), d);
         }
-        std::vector<std::uint8_t> n1 = wrk::write(s, wrk::WriteMode::Normalize);
-        std::vector<std::uint8_t> n2 = wrk::write(wrk::read(n1), wrk::WriteMode::Normalize);
+        const std::vector<std::uint8_t> n1 = wrk::write(appSong, wrk::WriteMode::Normalize);
         ++test::checks;
-        if (n1 != n2) {
+        if (wrk::write(wrk::read(n1), wrk::WriteMode::Normalize) != n1) {
             ++test::failures;
-            std::printf("FAIL normalize not idempotent for %s\n", p.filename().string().c_str());
+            std::printf("FAIL %s: normalize is not idempotent\n", name.c_str());
         }
-        std::printf("ok %-14s %6zu bytes, %zu tracks, %zu chunks\n", p.filename().string().c_str(), in.size(),
-                    s.tracks.size(), s.layout.size());
-    }
+        compareWithSource(name + " (app)", appSong, c.song, true);
 
-    // 2. Known content of the original samples.
-    Song cw = wrk::readFile((expanded / "CAKEWALK.WRK").string());
-    CHECK_EQ(cw.ppq, 120);
-    CHECK_EQ(cw.tracks.size(), 7u);
-    CHECK_EQ(cw.tempoMap.entries[0].bpm100, 18000);
-    CHECK_EQ(cw.tracks[0].name, "Clarinet");
-    CHECK_EQ(*cw.tracks[0].channel, 1);
-    CHECK_EQ(*cw.tracks[0].patch, 71);
-    CHECK_EQ(cw.tracks[1].muted, true);
-    CHECK_EQ(cw.tracks[0].events.size(), 156u);
-    CHECK_EQ(cw.tracks[0].events[0].data1, 65);
-    CHECK_EQ(cw.tracks[0].events[0].duration, 51);
-    CHECK_EQ(formatMBT(cw.meterMap.tickToMBT(cw.endTime())), formatMBT(cw.meterMap.tickToMBT(14878)));
-    Song row = wrk::readFile((expanded / "ROWROW.WRK").string());
-    CHECK_EQ(row.legacyTempoChunk, true);
-    CHECK_EQ(row.tempoMap.entries[0].bpm100, 9000);
-    CHECK_EQ(row.unknownChunks.size(), 10u); // MEMRGN
-    CHECK_EQ(row.tracks[0].name, "Theme");
-    Song demo = wrk::readFile((expanded / "DEMO.WRK").string());
-    CHECK_EQ(demo.tempoMap.entries.size(), 5u);
-    CHECK_EQ(demo.tracks[0].channel.has_value(), false);
-
-    // 3. Observed settings in the probe files.
-    if (fs::exists(saved / "out10.wrk")) {
-        Song s = wrk::readFile((saved / "out10.wrk").string());
-        CHECK_EQ(s.metronome.port, 1);
-        CHECK_EQ(s.metronome.channel, 4);
-        CHECK_EQ(s.metronome.key, 60);
-        CHECK_EQ(s.metronome.velocity, 99);
-        CHECK_EQ(s.metronome.duration, 7);
-        CHECK_EQ(s.vars.countIn(), 3);
-        CHECK_EQ(s.vars.metronomePlayback(), true);
-        CHECK_EQ(s.vars.metronomeAccent(), true);
-        CHECK_EQ(s.vars.sppLocateDelay(), 5);
-        CHECK_EQ(s.vars.zeroControllers(), true);
-        CHECK_EQ(s.vars.useContinue(), false);
-        CHECK_EQ(s.vars.patchSearchBack(), false);
-        CHECK(s.timecode.rate == FrameRate::Fps25);
-        CHECK_EQ(s.timecode.offsetFrames, 93075);
-        CHECK_EQ(formatHMSF(s.timecode.framesToHMSF(s.timecode.offsetFrames)), "01:02:03:00");
-        CHECK_EQ(s.thru.mode, 1);
-        CHECK_EQ(s.thru.channel, 6);
-        CHECK_EQ(s.thru.keyPlus, 12);
-        CHECK_EQ(s.thru.velPlus, 1);
-        CHECK_EQ(s.markers.size(), 2u);
-        CHECK_EQ(s.markers[0].name, "Verse");
-        CHECK_EQ(s.markers[0].time, 1090);
-        CHECK_EQ(s.markers[1].smpteLocked, true);
-        CHECK_EQ(s.markers[1].time, 3600);
-        const Track& t = s.tracks[0];
-        CHECK_EQ(t.keyPlus, 5);
-        CHECK_EQ(t.loop, true);
-        CHECK_EQ(*t.reps, 3);
-        CHECK_EQ(*t.timePlus, 6720);
-        CHECK_EQ(*t.volume, 100);
-        CHECK_EQ(*t.pan, 9);
-        CHECK_EQ(t.hasStringEvents(), true);
-        CHECK(t.events[0].kind == EventKind::Sysex);
-        CHECK(t.events[1].kind == EventKind::MciCommand);
-        CHECK_EQ(t.events[1].text(), "play c:\\wcwlite\\test.wav");
-        CHECK(t.events[2].kind == EventKind::Text);
-        CHECK_EQ(t.events[2].text(), "Hello text event");
-
-        // 4. SMF export must match what Apprentice wrote for the same song.
-        for (const char* name : {"out9", "out10"}) {
-            fs::path w = saved / (std::string(name) + ".wrk"), m = saved / (std::string(name) + ".mid");
-            if (!fs::exists(w) || !fs::exists(m))
-                continue;
-            std::vector<std::uint8_t> ours = smf::write(wrk::readFile(w.string())), theirs = slurp(m);
+        // 3. Apprentice's MIDI export has the same content as ours.
+        if (fs::exists(midFile)) {
             ++test::checks;
-            if (canonicalSmf(ours) != canonicalSmf(theirs)) {
+            if (canonicalSmf(smf::write(appSong)) != canonicalSmf(slurp(midFile))) {
                 ++test::failures;
-                std::printf("FAIL SMF export of %s.wrk differs from %s.mid in content\n", name, name);
-            } else {
-                const long d = firstDifference(ours, theirs);
-                std::printf("ok SMF export of %s.wrk matches Apprentice's %s.mid (%s)\n", name, name,
-                            d < 0 ? "byte-identical" : "same events; only the order of simultaneous note-offs differs");
+                std::printf("FAIL %s: SMF export differs from Apprentice's\n", name.c_str());
             }
         }
 
-        // 5. SMF import must give the model Apprentice produced when it imported the same file.
-        if (fs::exists(saved / "out10.mid") && fs::exists(saved / "out11.wrk")) {
-            Song ours = smf::readFile((saved / "out10.mid").string());
-            Song theirs = wrk::readFile((saved / "out11.wrk").string());
-            CHECK_EQ(ours.tracks.size(), theirs.tracks.size());
+        // 4. Our import of Apprentice's MIDI file equals Apprentice's own import of it.
+        if (fs::exists(midFile) && fs::exists(importFile)) {
+            const Song ours = smf::readFile(midFile.string());
+            const Song theirs = wrk::readFile(importFile.string());
+            const std::string what = name + " (mid2wrk)";
+            CHECK_FIELD(what, ours, theirs, tracks.size());
             for (std::size_t i = 0; i < std::min(ours.tracks.size(), theirs.tracks.size()); ++i) {
-                const Track &a = ours.tracks[i], &b = theirs.tracks[i];
-                CHECK_EQ(a.number, b.number);
-                CHECK_EQ(a.name, b.name);
-                CHECK_EQ(a.port, b.port);
-                CHECK_EQ(a.channel.value_or(255), b.channel.value_or(255));
-                CHECK_EQ(a.patch.value_or(-1), b.patch.value_or(-1));
-                CHECK_EQ(a.volume.value_or(-1), b.volume.value_or(-1));
-                CHECK_EQ(a.pan.value_or(-1), b.pan.value_or(-1));
+                const Track& a = ours.tracks[i];
+                const Track& b = theirs.tracks[i];
+                const std::string where = what + " track " + std::to_string(b.number + 1);
+                CHECK_FIELD(where, a, b, number);
+                CHECK_FIELD(where, a, b, name);
+                CHECK_FIELD(where, a, b, port);
                 ++test::checks;
-                if (!sameEvents(a, b)) {
+                if (opt(a.channel) != opt(b.channel) || opt(a.patch) != opt(b.patch) ||
+                    opt(a.volume) != opt(b.volume) || opt(a.pan) != opt(b.pan)) {
                     ++test::failures;
-                    std::printf("FAIL imported events of track %d differ (%zu vs %zu)\n", a.number + 1, a.events.size(),
-                                b.events.size());
+                    std::printf("FAIL %s: imported parameters differ (chan %s/%s patch %s/%s vol %s/%s pan %s/%s)\n",
+                                where.c_str(), opt(a.channel).c_str(), opt(b.channel).c_str(), opt(a.patch).c_str(),
+                                opt(b.patch).c_str(), opt(a.volume).c_str(), opt(b.volume).c_str(), opt(a.pan).c_str(),
+                                opt(b.pan).c_str());
+                }
+                ++test::checks;
+                if (!sameEvents(a, b, where)) {
+                    ++test::failures;
                 }
             }
-            CHECK_EQ(ours.markers.size(), theirs.markers.size());
-            CHECK_EQ(ours.tempoMap.entries[0].bpm100, theirs.tempoMap.entries[0].bpm100);
-            CHECK_EQ(ours.meterMap.entries.size(), theirs.meterMap.entries.size());
+            CHECK_FIELD(what, ours, theirs, markers.size());
+            CHECK_FIELD(what, ours, theirs, tempoMap.entries.size());
+            CHECK_FIELD(what, ours, theirs, meterMap.entries.size());
+            CHECK_FIELD(what, ours, theirs, keyMap.size());
         }
+        std::printf("ok   %s (%zu bytes, %zu tracks%s%s)\n", name.c_str(), appBytes.size(), appSong.tracks.size(),
+                    fs::exists(midFile) ? ", mid" : "", fs::exists(importFile) ? ", mid2wrk" : "");
+    }
+    if (songs == 0) {
+        std::printf("no corpus files under %s\n", data.string().c_str());
     }
     return test::report("corpus tests");
 }

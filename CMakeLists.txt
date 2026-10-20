@@ -7,8 +7,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(SSEQ_BUILD_TOOLS "Build the sseqtool command-line tool" ON)
 option(SSEQ_BUILD_TESTS "Build the tests" ON)
-# Directory with reference files for the corpus tests (not part of the repository).
-set(SSEQ_TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../Cakewalk" CACHE PATH "Directory holding the Cakewalk reference files")
 
 add_library(sseq
     src/model.cpp
@@ -36,10 +34,20 @@ if(SSEQ_BUILD_TESTS)
     target_compile_options(sseq_unit_tests PRIVATE ${SSEQ_WARNINGS})
     add_test(NAME unit COMMAND sseq_unit_tests)
 
+    # The corpus: song definitions shared by the generator and the corpus test.
+    add_library(sseq_corpus STATIC tests/corpus/songs.cpp)
+    target_link_libraries(sseq_corpus PUBLIC sseq)
+    target_include_directories(sseq_corpus PUBLIC tests)
+    target_compile_options(sseq_corpus PRIVATE ${SSEQ_WARNINGS})
+
+    add_executable(gencorpus tests/corpus/gencorpus.cpp)
+    target_link_libraries(gencorpus PRIVATE sseq_corpus)
+    target_compile_options(gencorpus PRIVATE ${SSEQ_WARNINGS})
+
     add_executable(sseq_corpus_tests tests/corpus_tests.cpp)
-    target_link_libraries(sseq_corpus_tests PRIVATE sseq)
+    target_link_libraries(sseq_corpus_tests PRIVATE sseq_corpus)
     target_compile_options(sseq_corpus_tests PRIVATE ${SSEQ_WARNINGS})
-    add_test(NAME corpus COMMAND sseq_corpus_tests "${SSEQ_TEST_DATA_DIR}")
+    add_test(NAME corpus COMMAND sseq_corpus_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 endif()
 
 install(TARGETS sseq EXPORT sseqTargets)

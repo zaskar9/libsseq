@@ -16,8 +16,7 @@ namespace sseq {
 /// A track (TTSSEQ "stream"). `number` is the 0-based slot in the file; the UI shows number + 1.
 struct Track {
     int number = 0;
-    std::string name;
-    std::string name2;                   // second name field in the TRACK chunk (unused by Apprentice)
+    std::string name; // full name (TRKNAME chunk); the TRACK chunk holds it split into two 15-character fields
     std::optional<std::uint8_t> channel; // forced output channel, nullopt = none (255 in file)
     std::int8_t keyPlus = 0;
     std::int8_t velPlus = 0;

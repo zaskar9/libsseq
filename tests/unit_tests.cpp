@@ -2,7 +2,14 @@
 #include "check.hpp"
 #include "sseq/sseq.hpp"
 
+#include <algorithm>
+#include <initializer_list>
+#include <vector>
+
 using namespace sseq;
+
+// Tests read optionals they just set; a missing value is a test failure, so the throw is wanted.
+// NOLINTBEGIN(bugprone-unchecked-optional-access)
 
 static void testMBT() {
     MeterMap m;
@@ -70,8 +77,8 @@ static void testTimecode() {
     Timecode df;
     df.rate = FrameRate::Fps30Drop;
     // Drop-frame: 00:01:00:00 does not exist; 00:00:59:29 is followed by 00:01:00:02.
-    CHECK_EQ(formatHMSF(df.framesToHMSF(60 * 30 - 1)), "00:00:59:29");
-    CHECK_EQ(formatHMSF(df.framesToHMSF(60 * 30)), "00:01:00:02");
+    CHECK_EQ(formatHMSF(df.framesToHMSF(std::int64_t{60} * 30 - 1)), "00:00:59:29");
+    CHECK_EQ(formatHMSF(df.framesToHMSF(std::int64_t{60} * 30)), "00:01:00:02");
     CHECK_EQ(df.hmsfToFrames(HMSF{0, 1, 0, 2}), 1800);
     CHECK_EQ(formatHMSF(df.framesToHMSF(df.hmsfToFrames(HMSF{0, 10, 0, 0}))), "00:10:00:00");
     CHECK_EQ(formatHMSF(df.framesToHMSF(df.hmsfToFrames(HMSF{1, 23, 45, 17}))), "01:23:45:17");
@@ -106,23 +113,23 @@ static void testWrkRoundTripOfNewSong() {
 
     std::vector<std::uint8_t> bytes = wrk::write(s);
     Song r = wrk::read(bytes);
-    CHECK_EQ(r.tracks.size(), 2u);
+    CHECK_EQ(r.tracks.size(), 2U);
     CHECK_EQ(r.tracks[0].name, "Piano");
-    CHECK_EQ(r.tracks[0].events.size(), 4u);
+    CHECK_EQ(r.tracks[0].events.size(), 4U);
     CHECK(r.tracks[0].events[1].kind == EventKind::Controller);
     CHECK_EQ(r.tracks[0].events[3].text(), "hello");
-    CHECK_EQ(*r.tracks[0].patch, 1);
-    CHECK_EQ(*r.tracks[0].volume, 100);
-    CHECK_EQ(*r.tracks[0].pan, 64);
+    CHECK_EQ(r.tracks[0].patch.value(), 1);
+    CHECK_EQ(r.tracks[0].volume.value(), 100);
+    CHECK_EQ(r.tracks[0].pan.value(), 64);
     CHECK_EQ(r.tracks[1].number, 2);
     CHECK_EQ(r.tracks[1].muted, true);
     CHECK_EQ(r.tracks[1].loop, true);
-    CHECK_EQ(*r.tracks[1].reps, 3);
-    CHECK_EQ(*r.tracks[1].timePlus, -10);
-    CHECK_EQ(r.markers.size(), 1u);
+    CHECK_EQ(r.tracks[1].reps.value(), 3);
+    CHECK_EQ(r.tracks[1].timePlus.value(), -10);
+    CHECK_EQ(r.markers.size(), 1U);
     CHECK_EQ(r.markers[0].name, "Verse");
     CHECK_EQ(r.markers[0].time, 480);
-    CHECK_EQ(r.tempoMap.entries.size(), 2u);
+    CHECK_EQ(r.tempoMap.entries.size(), 2U);
     CHECK_EQ(r.tempoMap.entries[1].bpm100, 10000);
     CHECK_EQ(r.commentsText(), "a comment");
     // Writing the re-read song in Preserve mode reproduces the bytes.
@@ -153,30 +160,137 @@ static void testSmfRoundTrip() {
 
     std::vector<std::uint8_t> mid = smf::write(s);
     Song r = smf::read(mid);
-    CHECK_EQ(r.tracks.size(), 1u);
+    CHECK_EQ(r.tracks.size(), 1U);
     const Track& u = r.tracks[0];
     CHECK_EQ(u.name, "Lead");
-    CHECK_EQ(*u.channel, 3);
-    CHECK_EQ(*u.patch, 5);
-    CHECK_EQ(*u.volume, 90);
-    CHECK_EQ(*u.pan, 32);
-    CHECK_EQ(u.events.size(), 4u);
+    CHECK_EQ(u.channel.value(), 3);
+    CHECK_EQ(u.patch.value(), 5);
+    CHECK_EQ(u.volume.value(), 90);
+    CHECK_EQ(u.pan.value(), 32);
+    CHECK_EQ(u.events.size(), 4U);
     CHECK_EQ(u.events[0].data1, 62); // Key+ baked in
     CHECK_EQ(u.events[0].duration, 100);
     CHECK_EQ(u.events[1].text(), "cue");
     CHECK_EQ(u.events[2].duration, 100);
     CHECK_EQ(u.events[3].duration, 50);
     CHECK_EQ(r.tempoMap.entries[0].bpm100, 10000);
-    CHECK_EQ(r.markers.size(), 1u);
+    CHECK_EQ(r.markers.size(), 1U);
     CHECK_EQ(r.markers[0].smpteLocked, true);
     CHECK_EQ(r.markers[0].time, 200);
 }
 
-int main() {
+// A DOS-era Cakewalk file (version 2.0 as written by Cakewalk Professional / Cakewalk 4 for DOS)
+// built from the documented layout: old TEMPO chunk with the cached double, METER records with
+// cached ticks, MEMRGN chunks and the Pro-only chunk 25. None of these can be produced by
+// Apprentice, so they are tested with fixtures.
+static std::vector<std::uint8_t> legacyFixture() {
+    std::vector<std::uint8_t> b = {'C', 'A', 'K', 'E', 'W', 'A', 'L', 'K', 0x1a, 0, 2};
+    const auto chunk = [&b](const std::uint8_t type, std::initializer_list<std::uint8_t> body) {
+        b.push_back(type);
+        const auto len = static_cast<std::uint32_t>(body.size());
+        b.insert(b.end(), {static_cast<std::uint8_t>(len), static_cast<std::uint8_t>(len >> 8), 0, 0});
+        b.insert(b.end(), body);
+    };
+    chunk(10, {0x78, 0x00}); // TIMEBASE 120
+    std::vector<std::uint8_t> vars(89, 0);
+    vars[18] = 1;
+    vars[19] = 1;
+    b.push_back(3);
+    b.insert(b.end(), {89, 0, 0, 0});
+    b.insert(b.end(), vars.begin(), vars.end());                                               // VARS
+    chunk(8, {0x02, 0x00, '\n', 0x00});                                                        // COMMENTS "\n\0"
+    chunk(1, {0x00, 0x00, 0x05, 'T', 'h', 'e', 'm', 'e', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}); // TRACK 1
+    chunk(2, {0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x90, 0x3c, 0x64, 0x78, 0x00});        // STREAM: one note
+    // TEMPO: 90 bpm, with the cached usec/tick as a double (5555.555...)
+    chunk(4, {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+              0x5a, 0x00, 0x39, 0x8e, 0xe3, 0x38, 0x8e, 0xb3, 0xb5, 0x40});
+    // METER: measure 1, 4/4, cached ticks/beat 120 and ticks/measure 480
+    chunk(5, {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x04, 0x02, 0x78, 0x00, 0xe0, 0x01});
+    for (std::uint8_t i = 0; i < 10; ++i) { // MEMRGN x 10
+        std::vector<std::uint8_t> m(42, 0);
+        m[0] = i;
+        b.push_back(7);
+        b.insert(b.end(), {42, 0, 0, 0});
+        b.insert(b.end(), m.begin(), m.end());
+    }
+    chunk(11, {0x1e, 0x00, 0x00, 0x00, 0x00, 0x00}); // TIMEFMT 30 fps
+    std::vector<std::uint8_t> c25 = {0x10, 0x00};    // chunk 25: 16 x {7, 63, i, 0}
+    for (std::uint8_t i = 0; i < 16; ++i) {
+        c25.insert(c25.end(), {7, 63, i, 0});
+    }
+    b.push_back(25);
+    b.insert(b.end(), {static_cast<std::uint8_t>(c25.size()), 0, 0, 0});
+    b.insert(b.end(), c25.begin(), c25.end());
+    b.push_back(0xff);
+    return b;
+}
+
+static void testLegacyFixture() {
+    const std::vector<std::uint8_t> bytes = legacyFixture();
+    const Song s = wrk::read(bytes);
+    CHECK_EQ(s.ppq, 120);
+    CHECK_EQ(s.legacyTempoChunk, true);
+    CHECK_EQ(s.tempoMap.entries.size(), 1U);
+    CHECK_EQ(s.tempoMap.entries[0].bpm100, 9000);
+    CHECK_EQ(s.tempoMap.entries[0].reserved2[7], 0x40); // the cached double is carried
+    CHECK_EQ(s.meterMap.entries[0].reserved2[0], 0x78); // and so are the cached meter ticks
+    CHECK_EQ(s.unknownChunks.size(), 11U);              // 10 MEMRGN + chunk 25
+    CHECK_EQ(s.unknownChunks[10].type, 25);
+    CHECK_EQ(s.tracks.size(), 1U);
+    CHECK_EQ(s.tracks[0].name, "Theme");
+    CHECK_EQ(s.tracks[0].events[0].data1, 60);
+    CHECK_EQ(s.commentsText(), "\n");
+    CHECK_EQ(s.layout.size(), 19U); // 8 modelled chunks, 10 MEMRGN, chunk 25
+    // Lossless: Preserve mode reproduces the file, legacy chunks included.
+    CHECK(wrk::write(s, wrk::WriteMode::Preserve) == bytes);
+    // Normalize mode upgrades it: NTEMPO instead of TEMPO, no MEMRGN, no chunk 25, TRKNAME added.
+    const Song n = wrk::read(wrk::write(s, wrk::WriteMode::Normalize));
+    CHECK_EQ(n.legacyTempoChunk, false);
+    CHECK_EQ(n.tempoMap.entries[0].bpm100, 9000);
+    CHECK_EQ(n.unknownChunks.size(), 0U);
+    CHECK_EQ(n.tracks[0].name, "Theme");
+    CHECK(std::ranges::any_of(n.layout, [](const LayoutEntry& e) { return e.type == wrk::TRKNAME; }));
+}
+
+static void testMalformedInput() {
+    const auto throws = [](const std::vector<std::uint8_t>& b) {
+        try {
+            (void)wrk::read(b);
+        } catch (const Error&) {
+            return true;
+        }
+        return false;
+    };
+    CHECK(throws({}));
+    CHECK(throws({'M', 'T', 'h', 'd', 0, 0, 0, 6, 0, 1, 0, 1, 0, 120})); // an SMF, not a WRK
+    std::vector<std::uint8_t> truncated = legacyFixture();
+    truncated.resize(truncated.size() / 2);
+    CHECK(throws(truncated));
+    std::vector<std::uint8_t> badLen = legacyFixture();
+    badLen[12] = 0xff; // TIMEBASE length byte -> chunk runs past the end
+    CHECK(throws(badLen));
+    const auto smfThrows = [](const std::vector<std::uint8_t>& b) {
+        try {
+            (void)smf::read(b);
+        } catch (const Error&) {
+            return true;
+        }
+        return false;
+    };
+    CHECK(smfThrows({}));
+    CHECK(smfThrows(legacyFixture()));
+    CHECK(smfThrows({'M', 'T', 'h', 'd', 0, 0, 0, 6, 0, 2, 0, 1, 0, 120})); // format 2
+}
+
+// NOLINTEND(bugprone-unchecked-optional-access)
+
+int main() { // NOLINT(bugprone-exception-escape): a throwing check is a failed test
     testMBT();
     testTempo();
     testTimecode();
     testWrkRoundTripOfNewSong();
     testSmfRoundTrip();
+    testLegacyFixture();
+    testMalformedInput();
     return test::report("unit tests");
 }

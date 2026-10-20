@@ -99,9 +99,15 @@ Not yet covered: the payload of Wave events (never produced in the observed sess
 ## 6. Build and test
 
 - `cmake -S . -B build && cmake --build build && ctest --test-dir build`
-- `SSEQ_TEST_DATA_DIR` (default `../Cakewalk`) points to the Cakewalk folder (`expanded/*.WRK`,
-  `analysis/wine-exploration/saved-files/*.wrk|*.mid`); the reference files are not part of the
-  repository. Without them the corpus test is skipped.
+- Unit tests (`tests/unit_tests.cpp`): model and time conversions, write/read of a new song,
+  SMF round trip, a hand-built DOS-era file fixture (old TEMPO, MEMRGN, chunk 25) and malformed
+  input.
+- Corpus tests (`tests/corpus_tests.cpp`, data in `tests/data/`): the songs defined in
+  `tests/corpus/songs.cpp` were written by libsseq, loaded into Cakewalk Apprentice 1.04 under
+  Wine and saved by it as `.WRK` and `.MID`, and the `.MID` was imported and saved again. The test
+  checks the generator is reproducible, the Apprentice files round-trip byte for byte, the model
+  read from them equals the song they were generated from, and export and import agree with
+  Apprentice's. `tests/data/README.md` has the provenance; `gencorpus` regenerates `src/`.
 - `sseqtool dump|info|roundtrip|convert|normalize`.
 - Swift consumption: a thin C API or Swift C++ interop (Xcode 15+) wrapped in a SwiftPM
   package is the next step for the app.

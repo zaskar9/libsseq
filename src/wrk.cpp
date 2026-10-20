@@ -313,13 +313,20 @@ Song read(const std::vector<std::uint8_t>& bytes) {
                 song.keyMap.clear();
                 haveKey = true;
             }
+            // One record per measure where the meter or the key changes; the key map keeps
+            // only the key changes (the writer restores the union).
             const int n = c.u16();
             for (int i = 0; i < n; ++i) {
                 KeyEntry k;
                 k.measure = c.u16();
                 c.skip(2); // numerator and denominator, duplicated from the meter map
                 k.alterations = c.s8();
-                song.keyMap.push_back(k);
+                if (song.keyMap.empty() || song.keyMap.back().alterations != k.alterations) {
+                    song.keyMap.push_back(k);
+                }
+            }
+            if (song.keyMap.empty()) {
+                song.keyMap.push_back(KeyEntry{});
             }
             break;
         }
@@ -367,8 +374,10 @@ Song read(const std::vector<std::uint8_t>& bytes) {
             const int num = c.u16();
             Track& t = song.track(num);
             le.index = num;
+            // Two 15-character fields: the first 15 characters and the next 15. TRKNAME, when
+            // present, carries the full name and overrides this.
             t.name = c.pstr();
-            t.name2 = c.pstr();
+            t.name += c.pstr();
             const std::uint8_t ch = c.u8();
             t.channel = ch == 255 ? std::nullopt : std::optional<std::uint8_t>(ch);
             t.keyPlus = c.s8();
@@ -420,8 +429,10 @@ Song read(const std::vector<std::uint8_t>& bytes) {
             const int num = c.u16();
             le.index = num;
             Track& t = song.track(num);
-            t.volume = c.s16();
-            t.pan = c.s16();
+            const int volume = c.s16(); // -1 = none (the value the UI uses for "none")
+            const int pan = c.s16();
+            t.volume = volume < 0 ? std::nullopt : std::optional<int>(volume);
+            t.pan = pan < 0 ? std::nullopt : std::optional<int>(pan);
             break;
         }
         case COMMENTS: {
@@ -556,8 +567,8 @@ void writeMidiEventBody(Writer& w, const Event& e, const bool fixed) {
 void writeTrackChunk(Writer& w, const Track& t) {
     const ChunkWriter c(w, TRACK);
     w.u16(detail::u16(t.number));
-    w.pstr(t.name);
-    w.pstr(t.name2);
+    w.pstr(t.name.substr(0, 15));
+    w.pstr(t.name.size() > 15 ? t.name.substr(15, 15) : std::string());
     w.u8(t.channel ? *t.channel : 255U);
     w.s8(t.keyPlus);
     w.s8(t.velPlus);
@@ -639,14 +650,32 @@ void writeChunk(Writer& w, const Song& song, const std::uint8_t type, const int 
         break;
     }
     case METERKEY: {
-        const ChunkWriter c(w, type);
-        w.u16(detail::u16(song.keyMap.size()));
+        // One record per measure where the meter or the key changes.
+        std::vector<int> measures;
+        measures.reserve(song.meterMap.entries.size() + song.keyMap.size());
+        for (const MeterEntry& m : song.meterMap.entries) {
+            measures.push_back(m.measure);
+        }
         for (const KeyEntry& k : song.keyMap) {
-            const MeterEntry& m = song.meterMap.atMeasure(k.measure);
-            w.u16(detail::u16(k.measure));
+            measures.push_back(k.measure);
+        }
+        std::ranges::sort(measures);
+        const auto [first, last] = std::ranges::unique(measures);
+        measures.erase(first, last);
+        const ChunkWriter c(w, type);
+        w.u16(detail::u16(measures.size()));
+        for (const int measure : measures) {
+            const MeterEntry& m = song.meterMap.atMeasure(measure);
+            int alterations = song.keyMap.front().alterations;
+            for (const KeyEntry& k : song.keyMap) {
+                if (k.measure <= measure) {
+                    alterations = k.alterations;
+                }
+            }
+            w.u16(detail::u16(measure));
             w.u8(detail::u8(m.numerator));
             w.u8(detail::u8(m.denominatorLog2));
-            w.s8(k.alterations);
+            w.s8(alterations);
         }
         break;
     }

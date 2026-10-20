@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 namespace test {
 
@@ -45,6 +46,10 @@ std::string str(const T& v) {
 }
 inline std::string str(const std::uint8_t v) {
     return std::to_string(static_cast<int>(v));
+}
+inline std::string str(const std::vector<std::uint8_t>& v) {
+    std::string s = "[" + std::to_string(v.size()) + " bytes]";
+    return s;
 }
 
 inline int report(const char* name) {

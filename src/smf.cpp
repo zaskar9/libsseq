@@ -80,7 +80,11 @@ void writeTrack(Writer& w, std::vector<Item>& items) {
     for (const Item& it : items) {
         t.vlq(detail::u32(it.time - last));
         last = it.time;
-        if (it.meta || it.explicitStatus) {
+        if (it.meta) {
+            t.bytes(it.bytes); // meta events do not interrupt running status in Apprentice's files
+            continue;
+        }
+        if (it.explicitStatus) {
             t.bytes(it.bytes);
             running = -1;
             continue;
@@ -132,8 +136,10 @@ std::vector<std::uint8_t> write(const Song& song) {
     items.reserve(song.meterMap.entries.size() + song.keyMap.size() + song.tempoMap.entries.size() +
                   song.markers.size());
     for (const MeterEntry& m : song.meterMap.entries) {
+        // MIDI clocks per metronome click: 24 per quarter note, scaled by the denominator.
+        const std::uint8_t clocks = detail::u8(96 / m.denominator());
         items.push_back({song.meterMap.measureStart(m.measure), kOrderTimeSig,
-                         metaBytes(kMetaTimeSig, {detail::u8(m.numerator), detail::u8(m.denominatorLog2), 24, 8}),
+                         metaBytes(kMetaTimeSig, {detail::u8(m.numerator), detail::u8(m.denominatorLog2), clocks, 8}),
                          true});
     }
     for (const KeyEntry& k : song.keyMap) {
@@ -156,7 +162,13 @@ std::vector<std::uint8_t> write(const Song& song) {
         items.clear();
         items.push_back({0, kOrderPort, metaBytes(kMetaPort, {t.port}), true});
         items.push_back({0, kOrderName, metaString(kMetaTrackName, t.name), true});
-        const std::uint8_t forced = t.channel.value_or(0);
+        // Parameters go on the forced channel, or on the channel of the track's first MIDI event.
+        std::uint8_t forced = 0;
+        if (t.channel) {
+            forced = *t.channel;
+        } else if (const auto first = std::ranges::find_if(t.events, &Event::isMidi); first != t.events.end()) {
+            forced = first->channel;
+        }
         // The track parameters are written with explicit status bytes (no running status).
         if (t.patch) {
             items.push_back({0, kOrderPatch, channelMessage(0xc0 | forced, clamp7(*t.patch)), false, true});
@@ -371,8 +383,8 @@ void importTrack(Song& song, Reader& r, const int trackNumber, const bool conduc
         case 0xc0:
             e.kind = EventKind::Patch;
             e.data1 = d1;
-            if (time == 0 && !haveParams && !t.patch) {
-                t.patch = d1;
+            if (time == 0 && !haveParams) {
+                t.patch = d1; // the last Program Change before the first other event wins
                 continue;
             }
             break;
