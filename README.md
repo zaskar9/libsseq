@@ -5,7 +5,8 @@ functional scope of Cakewalk's `TTSSEQ.DLL` sequencer engine. MIT licensed. Used
 Ensemble project.
 
 - Read and write `.WRK` losslessly (byte-identical round trip of every reference file).
-- Read and write `.MID` with the same mapping Cakewalk Apprentice 1.04 uses.
+- Read and write `.MID` with the same mapping Cakewalk Apprentice 1.04 uses (optionally without
+  Cakewalk's non-standard "MIDI Port" meta event).
 - Song model: tracks, events (notes with durations), tempo map, meter and key maps, SMPTE
   time format, markers, sysex banks, metronome and MIDI-thru settings, comments.
 - Time conversions: ticks ↔ seconds ↔ measure:beat:tick ↔ SMPTE frames (including drop-frame).
@@ -16,7 +17,7 @@ See `DESIGN.md` for the architecture and the mapping from the original engine's 
 ## Build
 
 ```
-cmake -S . -B build -DSSEQ_TEST_DATA_DIR=/path/to/Cakewalk
+cmake -S . -B build
 cmake --build build
 ctest --test-dir build
 ```
@@ -26,9 +27,9 @@ uses `-Wall -Wextra -Wpedantic -Wshadow -Wold-style-cast -Wconversion -Wsign-con
 warning-free on GCC and Clang; `.clang-format` and `.clang-tidy` define the style and the
 static checks (`clang-tidy -p build src/*.cpp`).
 
-The reference files used by the corpus test (the original Cakewalk sample songs and the probe
-files saved by Cakewalk Apprentice) are not part of the repository; without them the corpus
-test reports "skipping" and passes.
+The tests are self-contained: `tests/data/` holds a corpus of songs generated from
+`tests/corpus/songs.cpp` and the files Cakewalk Apprentice 1.04 saved for them, which serve as
+the oracle (see `tests/data/README.md`).
 
 ## Tool
 
@@ -37,6 +38,7 @@ build/sseqtool info     SONG.WRK          # summary
 build/sseqtool dump     SONG.WRK          # chunk structure (also for .mid)
 build/sseqtool roundtrip *.WRK            # read, write, compare bytes
 build/sseqtool convert  SONG.WRK OUT.MID  # or .mid -> .wrk
+build/sseqtool convert --plain SONG.WRK OUT.MID  # .mid without the Cakewalk port meta event
 build/sseqtool normalize IN.WRK OUT.WRK   # rewrite in Apprentice's chunk order
 ```
 

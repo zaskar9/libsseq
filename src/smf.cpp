@@ -120,7 +120,7 @@ std::vector<std::uint8_t> channelMessage(const std::uint8_t status, const std::u
 
 // ---------------------------------------------------------------- writing
 
-std::vector<std::uint8_t> write(const Song& song) {
+std::vector<std::uint8_t> write(const Song& song, const WriteOptions& options) {
     auto nonEmpty = song.tracks | std::views::filter([](const Track& t) { return !t.events.empty(); });
     const auto trackCount = static_cast<std::size_t>(std::ranges::distance(nonEmpty));
 
@@ -160,7 +160,9 @@ std::vector<std::uint8_t> write(const Song& song) {
     // Song tracks.
     for (const Track& t : nonEmpty) {
         items.clear();
-        items.push_back({0, kOrderPort, metaBytes(kMetaPort, {t.port}), true});
+        if (options.portMeta) {
+            items.push_back({0, kOrderPort, metaBytes(kMetaPort, {t.port}), true});
+        }
         items.push_back({0, kOrderName, metaString(kMetaTrackName, t.name), true});
         // Parameters go on the forced channel, or on the channel of the track's first MIDI event.
         std::uint8_t forced = 0;
@@ -226,8 +228,8 @@ std::vector<std::uint8_t> write(const Song& song) {
     return std::move(w.out);
 }
 
-void writeFile(const Song& song, const std::string& path) {
-    detail::writeFileBytes(path, write(song));
+void writeFile(const Song& song, const std::string& path, const WriteOptions& options) {
+    detail::writeFileBytes(path, write(song, options));
 }
 
 // ---------------------------------------------------------------- reading

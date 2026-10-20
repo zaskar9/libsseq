@@ -4,6 +4,7 @@
 //   sseqtool info FILE            song summary (tracks, tempo, meter, markers)
 //   sseqtool roundtrip FILE...    read each .wrk, write it back, report byte differences
 //   sseqtool convert IN OUT       .wrk <-> .mid by extension (.wrk written normalized)
+//   sseqtool convert --plain IN OUT   same, but a .mid without the Cakewalk port meta event
 //   sseqtool normalize IN OUT     rewrite a .wrk in Apprentice order
 #include "sseq/sseq.hpp"
 
@@ -128,15 +129,21 @@ int main(int argc, char** argv) {
             }
             return failures != 0 ? 1 : 0;
         } else if (cmd == "convert" || cmd == "normalize") {
-            if (argc < 4) {
+            smf::WriteOptions midiOptions;
+            int arg = 2;
+            if (std::string(argv[arg]) == "--plain") {
+                midiOptions.portMeta = false;
+                ++arg;
+            }
+            if (argc < arg + 2) {
                 std::fprintf(stderr, "need IN and OUT\n");
                 return 2;
             }
-            const std::string in = argv[2];
-            const std::string out = argv[3];
+            const std::string in = argv[arg];
+            const std::string out = argv[arg + 1];
             const Song s = isMidiFile(in) ? smf::readFile(in) : wrk::readFile(in);
             if (isMidiFile(out)) {
-                smf::writeFile(s, out);
+                smf::writeFile(s, out, midiOptions);
             } else {
                 const bool normalize = cmd == "normalize" || isMidiFile(in);
                 wrk::writeFile(s, out, normalize ? wrk::WriteMode::Normalize : wrk::WriteMode::Preserve);

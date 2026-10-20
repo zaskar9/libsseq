@@ -177,6 +177,13 @@ static void testSmfRoundTrip() {
     CHECK_EQ(r.markers.size(), 1U);
     CHECK_EQ(r.markers[0].smpteLocked, true);
     CHECK_EQ(r.markers[0].time, 200);
+    // Without the Cakewalk port meta event the file is 5 bytes shorter per track and reads the same.
+    smf::WriteOptions plain;
+    plain.portMeta = false;
+    const std::vector<std::uint8_t> plainMid = smf::write(s, plain);
+    CHECK_EQ(plainMid.size(), mid.size() - 5);
+    CHECK_EQ(smf::read(plainMid).tracks[0].events.size(), 4U);
+    CHECK(std::ranges::search(plainMid, std::vector<std::uint8_t>{0xff, 0x21}).empty());
 }
 
 // A DOS-era Cakewalk file (version 2.0 as written by Cakewalk Professional / Cakewalk 4 for DOS)
