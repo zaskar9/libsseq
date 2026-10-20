@@ -48,7 +48,7 @@ static void testTempo() {
     t.set(0, 18000); // 180 bpm: 3 beats/s, 360 ticks/s
     CHECK(std::abs(t.tickToSeconds(360) - 1.0) < 1e-9);
     CHECK_EQ(t.secondsToTick(1.0), 360);
-    // 4:4:117 at 180 bpm is 1917 ticks = 5.325 s = frame 159 at 30 fps (Apprentice showed 00:00:05:10
+    // 4:4:117 at 180 bpm is 1917 ticks = 5.325 s = frame 159 at 30 fps (Cakewalk Apprentice 1.04 showed 00:00:05:10
     // in a screenshot, but its two displays are not sampled at the same instant, so 09/10 is ambiguous).
     MeterMap m;
     m.ppq = 120;
@@ -72,7 +72,7 @@ static void testTimecode() {
     Timecode tc;
     tc.rate = FrameRate::Fps25;
     HMSF h{1, 2, 3, 0};
-    CHECK_EQ(tc.hmsfToFrames(h), 93075); // the value Apprentice stored for 01:02:03:00
+    CHECK_EQ(tc.hmsfToFrames(h), 93075); // the value Cakewalk Apprentice 1.04 stored for 01:02:03:00
     CHECK_EQ(formatHMSF(tc.framesToHMSF(93075)), "01:02:03:00");
     Timecode df;
     df.rate = FrameRate::Fps30Drop;
@@ -84,9 +84,9 @@ static void testTimecode() {
     CHECK_EQ(formatHMSF(df.framesToHMSF(df.hmsfToFrames(HMSF{1, 23, 45, 17}))), "01:23:45:17");
 }
 
-static void testWrkRoundTripOfNewSong() {
-    Song s;
-    Track& t = s.track(0);
+static void testWrkRoundTripOfNewSequence() {
+    Sequence s;
+    Stream& t = s.stream(0);
     t.name = "Piano";
     t.channel = 0;
     t.patch = 1;
@@ -96,7 +96,7 @@ static void testWrkRoundTripOfNewSong() {
     t.events.push_back(Event::note(120, 0, 64, 90, 120));
     t.events.push_back(Event::controller(60, 0, 1, 50));
     t.events.push_back(Event::textEvent(240, "hello"));
-    Track& u = s.track(2);
+    Stream& u = s.stream(2);
     u.name = "Bass";
     u.muted = true;
     u.loop = true;
@@ -112,35 +112,35 @@ static void testWrkRoundTripOfNewSong() {
     s.setComments("a comment");
 
     std::vector<std::uint8_t> bytes = wrk::write(s);
-    Song r = wrk::read(bytes);
-    CHECK_EQ(r.tracks.size(), 2U);
-    CHECK_EQ(r.tracks[0].name, "Piano");
-    CHECK_EQ(r.tracks[0].events.size(), 4U);
-    CHECK(r.tracks[0].events[1].kind == EventKind::Controller);
-    CHECK_EQ(r.tracks[0].events[3].text(), "hello");
-    CHECK_EQ(r.tracks[0].patch.value(), 1);
-    CHECK_EQ(r.tracks[0].volume.value(), 100);
-    CHECK_EQ(r.tracks[0].pan.value(), 64);
-    CHECK_EQ(r.tracks[1].number, 2);
-    CHECK_EQ(r.tracks[1].muted, true);
-    CHECK_EQ(r.tracks[1].loop, true);
-    CHECK_EQ(r.tracks[1].reps.value(), 3);
-    CHECK_EQ(r.tracks[1].timePlus.value(), -10);
+    Sequence r = wrk::read(bytes);
+    CHECK_EQ(r.streams.size(), 2U);
+    CHECK_EQ(r.streams[0].name, "Piano");
+    CHECK_EQ(r.streams[0].events.size(), 4U);
+    CHECK(r.streams[0].events[1].kind == EventKind::Controller);
+    CHECK_EQ(r.streams[0].events[3].text(), "hello");
+    CHECK_EQ(r.streams[0].patch.value(), 1);
+    CHECK_EQ(r.streams[0].volume.value(), 100);
+    CHECK_EQ(r.streams[0].pan.value(), 64);
+    CHECK_EQ(r.streams[1].number, 2);
+    CHECK_EQ(r.streams[1].muted, true);
+    CHECK_EQ(r.streams[1].loop, true);
+    CHECK_EQ(r.streams[1].reps.value(), 3);
+    CHECK_EQ(r.streams[1].timePlus.value(), -10);
     CHECK_EQ(r.markers.size(), 1U);
     CHECK_EQ(r.markers[0].name, "Verse");
     CHECK_EQ(r.markers[0].time, 480);
     CHECK_EQ(r.tempoMap.entries.size(), 2U);
     CHECK_EQ(r.tempoMap.entries[1].bpm100, 10000);
     CHECK_EQ(r.commentsText(), "a comment");
-    // Writing the re-read song in Preserve mode reproduces the bytes.
+    // Writing the re-read sequence in Preserve mode reproduces the bytes.
     CHECK(wrk::write(r) == bytes);
     // And so does Normalize mode, since the first write was normalized.
     CHECK(wrk::write(r, wrk::WriteMode::Normalize) == bytes);
 }
 
 static void testSmfRoundTrip() {
-    Song s;
-    Track& t = s.track(0);
+    Sequence s;
+    Stream& t = s.stream(0);
     t.name = "Lead";
     t.channel = 3;
     t.patch = 5;
@@ -159,9 +159,9 @@ static void testSmfRoundTrip() {
     s.markers.push_back(m);
 
     std::vector<std::uint8_t> mid = smf::write(s);
-    Song r = smf::read(mid);
-    CHECK_EQ(r.tracks.size(), 1U);
-    const Track& u = r.tracks[0];
+    Sequence r = smf::read(mid);
+    CHECK_EQ(r.streams.size(), 1U);
+    const Stream& u = r.streams[0];
     CHECK_EQ(u.name, "Lead");
     CHECK_EQ(u.channel.value(), 3);
     CHECK_EQ(u.patch.value(), 5);
@@ -177,19 +177,19 @@ static void testSmfRoundTrip() {
     CHECK_EQ(r.markers.size(), 1U);
     CHECK_EQ(r.markers[0].smpteLocked, true);
     CHECK_EQ(r.markers[0].time, 200);
-    // Without the Cakewalk port meta event the file is 5 bytes shorter per track and reads the same.
+    // Without the Cakewalk port meta event the file is 5 bytes shorter per stream and reads the same.
     smf::WriteOptions plain;
     plain.portMeta = false;
     const std::vector<std::uint8_t> plainMid = smf::write(s, plain);
     CHECK_EQ(plainMid.size(), mid.size() - 5);
-    CHECK_EQ(smf::read(plainMid).tracks[0].events.size(), 4U);
+    CHECK_EQ(smf::read(plainMid).streams[0].events.size(), 4U);
     CHECK(std::ranges::search(plainMid, std::vector<std::uint8_t>{0xff, 0x21}).empty());
 }
 
 // A DOS-era Cakewalk file (version 2.0 as written by Cakewalk Professional / Cakewalk 4 for DOS)
 // built from the documented layout: old TEMPO chunk with the cached double, METER records with
-// cached ticks, MEMRGN chunks and the Pro-only chunk 25. None of these can be produced by
-// Apprentice, so they are tested with fixtures.
+// cached ticks, MEMRGN chunks and the Cakewalk Professional-only chunk 25. None of these can be
+// produced by Cakewalk Apprentice 1.04, so they are tested with fixtures.
 static std::vector<std::uint8_t> legacyFixture() {
     std::vector<std::uint8_t> b = {'C', 'A', 'K', 'E', 'W', 'A', 'L', 'K', 0x1a, 0, 2};
     const auto chunk = [&b](const std::uint8_t type, std::initializer_list<std::uint8_t> body) {
@@ -234,7 +234,7 @@ static std::vector<std::uint8_t> legacyFixture() {
 
 static void testLegacyFixture() {
     const std::vector<std::uint8_t> bytes = legacyFixture();
-    const Song s = wrk::read(bytes);
+    const Sequence s = wrk::read(bytes);
     CHECK_EQ(s.ppq, 120);
     CHECK_EQ(s.legacyTempoChunk, true);
     CHECK_EQ(s.tempoMap.entries.size(), 1U);
@@ -243,19 +243,19 @@ static void testLegacyFixture() {
     CHECK_EQ(s.meterMap.entries[0].reserved2[0], 0x78); // and so are the cached meter ticks
     CHECK_EQ(s.unknownChunks.size(), 11U);              // 10 MEMRGN + chunk 25
     CHECK_EQ(s.unknownChunks[10].type, 25);
-    CHECK_EQ(s.tracks.size(), 1U);
-    CHECK_EQ(s.tracks[0].name, "Theme");
-    CHECK_EQ(s.tracks[0].events[0].data1, 60);
+    CHECK_EQ(s.streams.size(), 1U);
+    CHECK_EQ(s.streams[0].name, "Theme");
+    CHECK_EQ(s.streams[0].events[0].data1, 60);
     CHECK_EQ(s.commentsText(), "\n");
     CHECK_EQ(s.layout.size(), 19U); // 8 modelled chunks, 10 MEMRGN, chunk 25
     // Lossless: Preserve mode reproduces the file, legacy chunks included.
     CHECK(wrk::write(s, wrk::WriteMode::Preserve) == bytes);
     // Normalize mode upgrades it: NTEMPO instead of TEMPO, no MEMRGN, no chunk 25, TRKNAME added.
-    const Song n = wrk::read(wrk::write(s, wrk::WriteMode::Normalize));
+    const Sequence n = wrk::read(wrk::write(s, wrk::WriteMode::Normalize));
     CHECK_EQ(n.legacyTempoChunk, false);
     CHECK_EQ(n.tempoMap.entries[0].bpm100, 9000);
     CHECK_EQ(n.unknownChunks.size(), 0U);
-    CHECK_EQ(n.tracks[0].name, "Theme");
+    CHECK_EQ(n.streams[0].name, "Theme");
     CHECK(std::ranges::any_of(n.layout, [](const LayoutEntry& e) { return e.type == wrk::TRKNAME; }));
 }
 
@@ -295,7 +295,7 @@ int main() { // NOLINT(bugprone-exception-escape): a throwing check is a failed 
     testMBT();
     testTempo();
     testTimecode();
-    testWrkRoundTripOfNewSong();
+    testWrkRoundTripOfNewSequence();
     testSmfRoundTrip();
     testLegacyFixture();
     testMalformedInput();

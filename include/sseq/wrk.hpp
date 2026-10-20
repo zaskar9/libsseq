@@ -2,7 +2,7 @@
 // (TTSSEQ: SeqLoadCakewalkFile, SeqSaveCakewalkFile).
 #pragma once
 
-#include "song.hpp"
+#include "sequence.hpp"
 
 #include <cstdint>
 #include <string>
@@ -49,19 +49,19 @@ enum ChunkType : std::uint8_t {
 [[nodiscard]] const char* chunkName(std::uint8_t type) noexcept;
 
 enum class WriteMode {
-    /// Reproduce the chunk order recorded in `song.layout` (byte-identical round trip
+    /// Reproduce the chunk order recorded in `sequence.layout` (byte-identical round trip
     /// for files read by this library). Falls back to Normalize when the layout is empty.
     Preserve,
-    /// Write the chunks in the order Cakewalk Apprentice 1.04 uses, dropping legacy
+    /// Write the chunks in the order Cakewalk uses, dropping legacy
     /// chunks (old TEMPO becomes NTEMPO; MEMRGN and unknown chunks are omitted).
     Normalize,
 };
 
-[[nodiscard]] Song read(const std::vector<std::uint8_t>& bytes);
-[[nodiscard]] Song readFile(const std::string& path);
+[[nodiscard]] Sequence read(const std::vector<std::uint8_t>& bytes);
+[[nodiscard]] Sequence readFile(const std::string& path);
 
-[[nodiscard]] std::vector<std::uint8_t> write(const Song& song, WriteMode mode = WriteMode::Preserve);
-void writeFile(const Song& song, const std::string& path, WriteMode mode = WriteMode::Preserve);
+[[nodiscard]] std::vector<std::uint8_t> write(const Sequence& sequence, WriteMode mode = WriteMode::Preserve);
+void writeFile(const Sequence& sequence, const std::string& path, WriteMode mode = WriteMode::Preserve);
 
 /// Human-readable dump of the chunk structure (for sseqtool).
 [[nodiscard]] std::string dump(const std::vector<std::uint8_t>& bytes);

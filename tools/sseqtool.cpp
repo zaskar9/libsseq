@@ -1,11 +1,11 @@
 // sseqtool: command-line front end for libsseq.
 //
-//   sseqtool dump FILE            chunk / track structure of a .wrk or .mid file
-//   sseqtool info FILE            song summary (tracks, tempo, meter, markers)
+//   sseqtool dump FILE            chunk / stream structure of a .wrk or .mid file
+//   sseqtool info FILE            sequence summary (streams, tempo, meter, markers)
 //   sseqtool roundtrip FILE...    read each .wrk, write it back, report byte differences
 //   sseqtool convert IN OUT       .wrk <-> .mid by extension (.wrk written normalized)
 //   sseqtool convert --plain IN OUT   same, but a .mid without the Cakewalk port meta event
-//   sseqtool normalize IN OUT     rewrite a .wrk in Apprentice order
+//   sseqtool normalize IN OUT     rewrite a .wrk in Cakewalk's chunk order
 #include "sseq/sseq.hpp"
 
 #include <algorithm>
@@ -49,9 +49,9 @@ namespace {
     return static_cast<long>(ia - a.begin());
 }
 
-void info(const Song& s) {
-    std::printf("WRK %d.%d, %d ppq, %zu tracks, end %lld ticks (%s)\n", s.versionMajor, s.versionMinor, s.ppq,
-                s.tracks.size(), static_cast<long long>(s.endTime()),
+void info(const Sequence& s) {
+    std::printf("WRK %d.%d, %d ppq, %zu streams, end %lld ticks (%s)\n", s.versionMajor, s.versionMinor, s.ppq,
+                s.streams.size(), static_cast<long long>(s.endTime()),
                 formatMBT(s.meterMap.tickToMBT(s.endTime())).c_str());
     std::printf("tempo:");
     for (const TempoEntry& e : s.tempoMap.entries) {
@@ -73,8 +73,8 @@ void info(const Song& s) {
         std::printf("marker %lld%s '%s'\n", static_cast<long long>(m.time), m.smpteLocked ? " (SMPTE)" : "",
                     m.name.c_str());
     }
-    for (const Track& t : s.tracks) {
-        std::printf("track %2d '%s' chan %s port %d key%+d vel%+d%s%s", t.number + 1, t.name.c_str(),
+    for (const Stream& t : s.streams) {
+        std::printf("stream %2d '%s' chan %s port %d key%+d vel%+d%s%s", t.number + 1, t.name.c_str(),
                     t.channel ? std::to_string(*t.channel + 1).c_str() : "-", t.port + 1, t.keyPlus, t.velPlus,
                     t.muted ? " muted" : "", t.loop ? " loop" : "");
         if (t.patch) {
@@ -141,7 +141,7 @@ int main(int argc, char** argv) {
             }
             const std::string in = argv[arg];
             const std::string out = argv[arg + 1];
-            const Song s = isMidiFile(in) ? smf::readFile(in) : wrk::readFile(in);
+            const Sequence s = isMidiFile(in) ? smf::readFile(in) : wrk::readFile(in);
             if (isMidiFile(out)) {
                 smf::writeFile(s, out, midiOptions);
             } else {

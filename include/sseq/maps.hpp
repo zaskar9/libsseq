@@ -24,7 +24,7 @@ struct TempoEntry {
 class TempoMap {
 public:
     std::vector<TempoEntry> entries{TempoEntry{}};
-    int ppq = 120; // set by the owning Song; needed for seconds conversions
+    int ppq = 120; // set by the owning Sequence; needed for seconds conversions
 
     [[nodiscard]] const TempoEntry& at(Tick time) const noexcept; // entry in force at `time`
     void set(Tick time, int bpm100);                              // insert or replace

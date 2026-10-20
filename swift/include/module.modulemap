@@ -1,0 +1,4 @@
+module SSeq {
+    umbrella header "SSeq.h"
+    export *
+}

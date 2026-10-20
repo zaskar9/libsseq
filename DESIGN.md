@@ -1,24 +1,39 @@
 # libsseq design
 
 libsseq is a C++20 library for reading, editing, saving and (later) playing Cakewalk `.WRK`
-songs, with the functional scope of `TTSSEQ.DLL`, the sequencer engine of Cakewalk Apprentice
+sequences, with the functional scope of `TTSSEQ.DLL`, the sequencer engine of Cakewalk Apprentice
 and Cakewalk Professional for Windows (1992–93). It follows the engine's concepts, not its
-Win16 interface. It is a standalone library (MIT licensed) and the core of the Ensemble project,
-whose Swift app provides the user interface and CoreMIDI.
+Win16 interface. It is a standalone, MIT-licensed library with no dependencies beyond the C++
+standard library; applications add the platform pieces (MIDI I/O, user interface) on top.
 
-Sources of truth (in the Cakewalk analysis folder, kept next to this repository as `../Cakewalk`): `analysis/REPORT.md` (static analysis), `ALTERNATIVES-LOG.md`
-and `wine-exploration/WINE-EXPLORATION.md` (observed behaviour of the program under Wine).
-No code was copied from any other implementation; the GPL `QWrk` parser was used only as a
-reference to compare behaviour against.
+Sources of truth: the structure of the original binaries (headers, resources, exported and imported
+symbol names, strings), the text of the program's help file, and the behaviour of Cakewalk
+Apprentice 1.04 observed under Wine (differential saves, screenshots). That analysis is kept outside
+this repository; the oracle files it produced are in `tests/data/`. No code was copied from any
+other implementation; the GPL `QWrk` parser was used only as a reference to compare behaviour against.
+
+Naming: "Cakewalk" is the program, its formats and its behaviours; Apprentice and Professional are
+editions of it built from one code base. "Cakewalk Apprentice 1.04" is written out in full where a
+statement is about that build, which produced every oracle file in `tests/data/` and showed the
+limits recorded there; "Cakewalk Professional" marks features that edition alone has.
+
+Terminology follows the engine, not the application: a **sequence** (`SeqCreateSeq`) holds
+**streams** (`SeqCreateStream`) of **events**; the Cakewalk UI shows each stream as a track and calls
+the sequence a work (`.WRK`); an application built on libsseq can do the same. "Track" appears in this code base
+only where it names something in a file format: the `TRACK` chunk of `.WRK` and the `MTrk` chunks
+of a Standard MIDI File, which `SeqSaveMidiFile` maps onto streams (track 0 carries the maps and
+markers, every non-empty stream becomes one track).
 
 ## 1. Layers
 
 | Layer | Namespace / files | Depends on | Status |
 |---|---|---|---|
-| Model | `sseq::Song`, `Track`, `Event`, `TempoMap`, `MeterMap`, `Timecode`, `Marker`, `SysxBank` (`song.hpp`, `maps.hpp`, `event.hpp`, `model.cpp`) | nothing | v0.1 |
+| Model | `sseq::Sequence`, `Stream`, `Event`, `TempoMap`, `MeterMap`, `Timecode`, `Marker`, `SysxBank` (`sequence.hpp`, `maps.hpp`, `event.hpp`, `model.cpp`) | nothing | v0.1 |
 | Formats | `sseq::wrk` (`wrk.hpp/.cpp`), `sseq::smf` (`smf.hpp/.cpp`) | Model | v0.1 |
-| Engine | `sseq::engine` (`engine.hpp/.cpp`): `Transport`, `render`, `MidiSink` / `Clock` interfaces | Model | v0.2 |
-| Platform | CoreMIDI sink and clock, Swift package | Engine | v0.3 (planned, in the app) |
+| Engine | `sseq::engine` (`engine.hpp/.cpp`, `recorder.hpp/.cpp`): `Transport`, `Recorder`, `render`, `MidiSink` / `Clock` interfaces | Model | v0.2, v0.3 |
+| C API | `sseq.h` / `capi.cpp`: flat C interface over everything above, for Swift | all | v0.3 |
+| Swift package | `Package.swift`: the C API as module `SSeq` | C API | v0.3 |
+| Platform | MIDI sink and clock (CoreMIDI, ALSA, ...), MIDI input, UI | C API or Swift package | in the application |
 | Tools | `sseqtool` | Formats | v0.1 |
 
 Each layer is testable without the one above. The model has no I/O and no platform code.
@@ -27,18 +42,18 @@ Each layer is testable without the one above. The model has no I/O and no platfo
 
 | TTSSEQ exports (groups) | libsseq |
 |---|---|
-| `SeqCreateSeq`, `SeqDestroySeq`, `SeqSet/GetSeqParam` | `Song` value type; parameters are fields (`ppq`, `vars`, `timecode`, ...) |
-| `SeqCreateStream`, `SeqDestroyStream`, `SeqEnumStreams`, `SeqSet/GetStreamParam`, `SeqSet/GetStreamName`, `SeqCloneStream`, `SeqAdoptStream`, `SeqMergeStreams`, `SeqCloneStreamParams` | `Track` in `Song::tracks`; `Song::track(n)`, `findTrack(n)`; cloning and merging are `std::vector` operations on `Track::events` |
-| `SeqTell/Eos/Seek/NxtEvt/GetEvt/GetEvtCopy/PutEvt/InsEvt/DelEvt/MoveEvt`, `SeqEvtAtTimeGE/GT`, `SeqStreamLen/Dur`, `SeqMeasHasEvts` | `Track::events` is a time-sorted `std::vector<Event>`; iterators and `std::lower_bound` replace the cursor; `Track::endTime()` |
-| `SeqInsertRange`, `SeqDeleteRange`, `SeqDisplaceEarlier/Later`, `SeqTemporalSort` | range edits on `Track::events` (v0.2 editing operations); `sortEvents()` |
+| `SeqCreateSeq`, `SeqDestroySeq`, `SeqSet/GetSeqParam` | `Sequence` value type; parameters are fields (`ppq`, `vars`, `timecode`, ...) |
+| `SeqCreateStream`, `SeqDestroyStream`, `SeqEnumStreams`, `SeqSet/GetStreamParam`, `SeqSet/GetStreamName`, `SeqCloneStream`, `SeqAdoptStream`, `SeqMergeStreams`, `SeqCloneStreamParams` | `Stream` in `Sequence::streams`; `Sequence::stream(n)`, `findStream(n)`; cloning and merging are `std::vector` operations on `Stream::events` |
+| `SeqTell/Eos/Seek/NxtEvt/GetEvt/GetEvtCopy/PutEvt/InsEvt/DelEvt/MoveEvt`, `SeqEvtAtTimeGE/GT`, `SeqStreamLen/Dur`, `SeqMeasHasEvts` | `Stream::events` is a time-sorted `std::vector<Event>`; iterators and `std::lower_bound` replace the cursor; `Stream::endTime()` |
+| `SeqInsertRange`, `SeqDeleteRange`, `SeqDisplaceEarlier/Later`, `SeqTemporalSort` | range edits on `Stream::events` (v0.2 editing operations); `sortEvents()` |
 | `SeqRegisterEventKind`, `SeqCallEventProc` (Text, MCIcmd, Wave handled by the app) | `EventKind::Text / MciCommand / Wave` with a byte payload; the app interprets them |
-| `SeqGetMaxPPQ`, `SeqSet/GetPPQ`, `SeqRescaleTime` | `Song::ppq`, `syncPpq()`; rescaling is a planned model operation |
+| `SeqGetMaxPPQ`, `SeqSet/GetPPQ`, `SeqRescaleTime` | `Sequence::ppq`, `syncPpq()`; rescaling is a planned model operation |
 | Tempo map: `SeqGet/SetTempo`, `SeqInsTempo`, `SeqDelTempo`, `SeqEnumTempos`, `SeqTempoIxByTick`, `SeqGetTempoAtIx`, `SeqRecalcTempoMap`, `SeqGetMin/MaxTempo` | `TempoMap` (`entries`, `at()`, `set()`, `remove()`, `tickToSeconds()`, `secondsToTick()`) |
 | Tempo ratios: `SeqGet/SetTempoRatio`, `SeqSelectTempoRatio`, `SeqWhichTempoRatio`, `SeqTempoRatio2Str` | `Vars` bytes 58–61 (stored); playback ratio belongs to the engine |
-| Meter map: `SeqGet/SetMeter`, `SeqInsMeter`, `SeqDelMeter`, `SeqEnumMeters`, `SeqMeterIxByTick`, `SeqMBT2Tick`, `SeqTick2MBT`, `SeqTick2Meas`, `SeqTick2MBTStr`, `SeqMBTStr2MBT`, `SeqTickNext/PrevMeas`, `SeqTickNext/PrevBeat` | `MeterMap` (`entries`, `atMeasure()`, `measureStart()`, `tickToMBT()`, `mbtToTick()`, `nextMeasure()`, `prevMeasure()`), `formatMBT()`, `parseMBT()`; key signatures in `Song::keyMap` |
+| Meter map: `SeqGet/SetMeter`, `SeqInsMeter`, `SeqDelMeter`, `SeqEnumMeters`, `SeqMeterIxByTick`, `SeqMBT2Tick`, `SeqTick2MBT`, `SeqTick2Meas`, `SeqTick2MBTStr`, `SeqMBTStr2MBT`, `SeqTickNext/PrevMeas`, `SeqTickNext/PrevBeat` | `MeterMap` (`entries`, `atMeasure()`, `measureStart()`, `tickToMBT()`, `mbtToTick()`, `nextMeasure()`, `prevMeasure()`), `formatMBT()`, `parseMBT()`; key signatures in `Sequence::keyMap` |
 | SMPTE: `SeqSet/GetFps`, `SeqSet/GetFrameOfs`, `SeqTick2Frame`, `SeqFrame2TickRndOpt`, `SeqFrame2HMSF`, `SeqHMSF2Frame`, `SeqTick2HMSFStr`, `SeqHMSFStr2HMSF`, `SeqHMSFStr2MBT` | `Timecode` (`rate`, `offsetFrames`, `secondsToFrames()`, `framesToHMSF()`, `hmsfToFrames()`), `formatHMSF()`, `parseHMSF()`; tick↔frame goes through `TempoMap::tickToSeconds()` |
-| Markers: `SeqNumMarkers`, `SeqMarkerForTime`, `SeqIns/DelMarker`, `SeqSet/GetMarkerName/Time`, `SeqSortMarkers` | `Song::markers` (`std::vector<Marker>`) |
-| Sysex banks: `SeqCreate/Destroy/EmptySysxBank`, `SeqEnumSysxBanks`, `SeqSet/GetSysxBankParam/Name`, `SeqGetSysxBankLen`, `SeqSysxBin2Asc/Asc2Bin`, `SeqSave/LoadSysxBank`, `SeqSend/ReceiveSysxBank` | `Song::sysxBanks` (`SysxBank`); file and transfer functions planned |
+| Markers: `SeqNumMarkers`, `SeqMarkerForTime`, `SeqIns/DelMarker`, `SeqSet/GetMarkerName/Time`, `SeqSortMarkers` | `Sequence::markers` (`std::vector<Marker>`) |
+| Sysex banks: `SeqCreate/Destroy/EmptySysxBank`, `SeqEnumSysxBanks`, `SeqSet/GetSysxBankParam/Name`, `SeqGetSysxBankLen`, `SeqSysxBin2Asc/Asc2Bin`, `SeqSave/LoadSysxBank`, `SeqSend/ReceiveSysxBank` | `Sequence::sysxBanks` (`SysxBank`); file and transfer functions planned |
 | Files: `SeqLoad/SaveCakewalkFile`, `SeqLoad/SaveMidiFile`, `SeqIOSeek/Read/Write`, `SeqGetFileError` | `wrk::read/write`, `smf::read/write`; errors are `sseq::Error` exceptions |
 | Transport: `SeqSetPlayingSeq`, `SeqSetStandbySeq`, `SeqSet/GetSrcClock`, `SeqPlayStart/Stop`, `SeqRecordStart/Stop/Cleanup`, `SeqRewind`, `SeqSet/GetNow`, `SeqGetEnd`, `SeqSet/GetDur`, `SeqExpired`, `SeqIdle` | engine layer (v0.2): a `Transport` owning a `Scheduler`; `Vars::now()` persists the Now time |
 | Input: `SeqStepRecSetup/Params/Term`, `SeqRecordEvent`, `SeqRecCount`, `SeqTxMidiMsg`, `SeqSetMidiMacro`, `SeqClearMidiMacroShift` | engine layer (v0.2+) |
@@ -51,35 +66,35 @@ Each layer is testable without the one above. The model has no I/O and no platfo
 - `Event` carries a kind, channel, two data fields, a duration (notes) and a byte payload
   (string events). Notes are single events with a duration, as in Cakewalk; note-on/off pairs
   exist only in SMF. Pitch wheel values are signed (−8192..8191).
-- `Track::events` is kept sorted by time (stable). Writers sort defensively.
+- `Stream::events` is kept sorted by time (stable). Writers sort defensively.
 - `Vars` keeps the raw 89 bytes of the VARS chunk and exposes the known fields as accessors,
   so that fields whose meaning is not yet known survive a round trip.
 - Reserved bytes in tempo, meter and marker records are carried in the entries for the same
   reason (the DOS-era files store cached values there).
-- `Song::layout` records the chunk sequence of the file that was read. `wrk::write` in
+- `Sequence::layout` records the chunk sequence of the file that was read. `wrk::write` in
   `Preserve` mode replays it, serializing modelled chunks from the model and unknown chunks
   verbatim. This gives a byte-identical round trip for every reference file, including the
-  DOS-era ones with legacy chunks. `Normalize` mode writes the chunk order Apprentice 1.04
-  uses and drops legacy chunks, which is what Apprentice itself does on save.
+  DOS-era ones with legacy chunks. `Normalize` mode writes the chunk order Cakewalk
+  uses and drops legacy chunks, which is what Cakewalk itself does on save.
 
 ## 4. File formats
 
 The `.WRK` 2.0 layout is specified in `../Cakewalk/analysis/REPORT.md` §6 and verified in
 `wine-exploration/WINE-EXPLORATION.md` §3. The SMF mapping is in `ALTERNATIVES-LOG.md`.
-Two details found while matching Apprentice's SMF output byte for byte:
+Two details found while matching Cakewalk's SMF output byte for byte:
 
 - The time-0 parameter messages (Program Change, CC7, CC10) are written with explicit status
   bytes; running status starts with the first stream event.
 - Simultaneous note-offs are written in an order that is not consistent between cases
   (sometimes the later-started note first, sometimes the earlier one), which looks like an
-  unstable sort inside Apprentice. libsseq writes note-offs before note-ons at the same tick
+  unstable sort inside Cakewalk. libsseq writes note-offs before note-ons at the same tick
   and otherwise keeps a deterministic order. The corpus test therefore compares SMF output
-  semantically (same events at the same ticks per track), not byte for byte.
+  semantically (same events at the same ticks per stream), not byte for byte.
 - On import, a note-off is paired with the most recent open note of the same key (LIFO),
-  which is what Apprentice does (verified against its own import of `out10.mid`).
+  which is what Cakewalk does (verified against Cakewalk Apprentice 1.04's own import of `out10.mid`).
 
 Not yet covered: the payload of Wave events (never produced in the observed sessions), chunk 25
-(a Cakewalk Pro Faders-view state; preserved verbatim), later format versions (chunks 36, 44,
+(a Cakewalk Professional Faders-view state; preserved verbatim), later format versions (chunks 36, 44,
 45, 49, 55, 74 and others; preserved verbatim, not interpreted), sysex bank files, `.MFF`.
 
 ## 5. Engine (v0.2)
@@ -92,48 +107,102 @@ the two things that differ between platforms and the engine does everything else
 - `MidiSink`: receives `MidiMessage{time, port, size, data[3]}` and `sendSysex(time, port,
   bytes)` with absolute timestamps up to the look-ahead in the future, plus `flush()` at the end
   of each pump. A CoreMIDI sink converts `time` to a `MIDITimeStamp`; a test sink records.
-- `Transport(song, clock, sink, options)`: `play`/`stop`/`rewind`/`seek`, `now()` in ticks,
+- `Transport(sequence, clock, sink, options)`: `play`/`stop`/`rewind`/`seek`, `now()` in ticks,
   `setMuted`/`setSolo` (mute, solo), `setTempoRatio` (the 0.50/1.00/2.00 buttons), an optional
   loop range (auto-shuttle), and a string-event handler for Text/MCI/Wave events. The caller
   calls `pump()` every 10–20 ms; each pump schedules everything up to `clock.now() + lookAhead`
   so the caller's timer jitter does not reach the MIDI port.
-- Playlist: on construction the tracks are flattened into one list of outputs sorted by tick
+- Playlist: on construction the streams are flattened into one list of outputs sorted by tick
   (note-off < controller/patch/wheel < note-on < sysex < string at equal ticks). Key+, Vel+,
-  Time+, forced channel, port and track loop repetitions (`reps`, period = whole measures) are
-  applied here, as Apprentice applies them at output time rather than in the data.
+  Time+, forced channel, port and stream loop repetitions (`reps`, period = whole measures) are
+  applied here, as Cakewalk applies them at output time rather than in the data.
 - Tick ↔ clock: `tempoMap.tickToSeconds` / `secondsToTick` scaled by the tempo ratio, anchored
-  at the last play/seek/ratio change, so tempo changes inside the song are exact and ratio
+  at the last play/seek/ratio change, so tempo changes inside the sequence are exact and ratio
   changes take effect immediately.
-- Start: track parameters (patch, volume, pan) for every track with events, then a "chase" of
+- Start: stream parameters (patch, volume, pan) for every stream with events, then a "chase" of
   the latest patch/controller/wheel before the position per (port, channel, controller), as
-  Apprentice's patch/controller search-back does. Both are options.
+  Cakewalk's patch/controller search-back does. Both are options.
 - Stop and seek: notes still sounding are turned off (a count per (port, channel, key) keeps
   overlapping notes correct and never emits an off for a note that was never turned on);
   optionally mod wheel, sustain, channel pressure and pitch wheel are zeroed (the VARS flag).
-  `PlaybackOptions::fromSong` takes chase and zero-controllers from the song's settings.
-- `render(song, options, from, thru)`: the same scheduling offline, returning the messages with
+  `PlaybackOptions::fromSequence` takes chase and zero-controllers from the sequence's settings.
+- `render(sequence, options, from, thru)`: the same scheduling offline, returning the messages with
   times in seconds from `from`; this is what the tests check and what an export-to-audio or
   SMF-0 writer would consume.
-- Not in the engine: MIDI input/recording, thru and the metronome (they need a real-time input
-  path and belong to the platform layer), MIDI sync output.
+- Metronome (v0.3): with `metronome` on, the sequence's metronome note (port, channel, key,
+  velocity, duration from the METRONOME chunk) plays on every beat of the meter map while
+  playing, interleaved in time order with the sequence's messages; a velocity or duration of 0
+  disables it, as Cakewalk's help says. With `metronomeAccent`, beats other than the first of
+  a measure play at 3/4 of the velocity (the amount is not documented; Cakewalk cannot be
+  observed here because Wine has no MIDI device). `countInMeasures` plays whole measures of
+  clicks before the start position, in the meter and tempo at that position; `now()` stays at
+  the start and `countingIn()` is true until the sequence begins. `PlaybackOptions::fromSequence(sequence,
+  recording)` takes the playback or the recording metronome flag, the accent flag, and for
+  recording the count-in and `stopAtEnd = false` (recording runs past the end of the material).
+- Loop count 9999 means "keep looping as long as the non-looping streams play" (help: Track/Loop):
+  the stream repeats until the end of the longest stream with loop count 1 and is cut there.
+- `panic()`: stop, then all-notes-off and the controller reset on every channel of every port
+  (the control bar's panic button).
+- `Recorder(transport, options)` (`recorder.hpp`): the platform layer hands it timestamped input
+  messages; it converts their times to ticks through `Transport::tickAt()` (so input during the
+  count-in or while stopped is ignored), pairs note-offs with the most recent open note of the
+  same key (LIFO, as Cakewalk does on import), applies an event-kind filter and an optional
+  punch range, closes held notes on `finish()`, and merges the take into a stream with `commit()`
+  (sound on sound, Cakewalk's "Keep take?") or `commitReplacing()` (overwrite). Cakewalk Apprentice 1.04
+  itself has no punch-in or multi-take (help: those are Cakewalk Professional features), so the
+  punch range is a library extension.
+- Not in the engine: MIDI thru (low-latency routing of input to output belongs to the platform
+  layer; the settings are in the model), MIDI sync output, step record (a dialog on top of the
+  model).
+
+## 5a. C API and Swift package (v0.3)
+
+`include/sseq/sseq.h` is a flat C interface over the model, the formats, the engine and the
+recorder, implemented in `src/capi.cpp`, so that Swift (or any other language) can use the
+library without C++ interop. Design points:
+
+- Opaque handles `sseq_sequence`, `sseq_transport`, `sseq_recorder` with `_new`/`_read*` and `_free`.
+  Functions that can fail return 0 or NULL and set a per-thread message read with
+  `sseq_last_error()`. Exceptions never cross the boundary.
+- Plain structs for events, stream parameters, map entries and options, with `-1`/`0` for the
+  model's `std::optional` fields and `has_*` flags where a sentinel would be ambiguous. Streams
+  are addressed by index in file order; events by index within a stream and kept in time order by
+  the insert/set functions. String payloads and names are returned as pointers valid until the
+  sequence changes.
+- Files are read and written both by path and in memory (`sseq_data`), for document-based apps.
+- The transport takes `sseq_transport_callbacks`: `now`, `send`, `send_sysex`, `flush` and
+  `string_event` function pointers with a context. The C++ `Clock` and `MidiSink` adapters live
+  inside `capi.cpp`.
+- `tests/capi_tests.c` is compiled as C11 with the full warning set, so the header stays usable
+  from C.
+
+`Package.swift` compiles `src/` as the SwiftPM target `SSeq` with `swift/include/module.modulemap`
+and the umbrella header `swift/include/SSeq.h`, which includes `sseq.h`. The C++ headers stay out
+of the module. A Swift application depends on the package and adds its MIDI sink and clock (CoreMIDI),
+the input path and whatever wrapper it wants on its side.
 
 ## 6. Build and test
 
 - `cmake -S . -B build && cmake --build build && ctest --test-dir build`
-- Unit tests (`tests/unit_tests.cpp`): model and time conversions, write/read of a new song,
+- Unit tests (`tests/unit_tests.cpp`): model and time conversions, write/read of a new sequence,
   SMF round trip, a hand-built DOS-era file fixture (old TEMPO, MEMRGN, chunk 25) and malformed
   input.
-- Engine tests (`tests/engine_tests.cpp`): offline rendering of hand-built songs (ordering,
-  Key+/Vel+/Time+, mute/solo, tempo changes and ratio, loops, track repetitions, sysex and
-  string events), and a `Transport` driven by a fake clock and a recording sink (look-ahead
-  windows, stop cutting notes and zeroing controllers, resume, seek with chase); finally every
-  corpus song is rendered and its message count checked against the model.
-- Corpus tests (`tests/corpus_tests.cpp`, data in `tests/data/`): the songs defined in
-  `tests/corpus/songs.cpp` were written by libsseq, loaded into Cakewalk Apprentice 1.04 under
+- Engine tests (`tests/engine_tests.cpp`): offline rendering of hand-built sequences (ordering,
+  Key+/Vel+/Time+, mute/solo, tempo changes and ratio, loops, stream repetitions including 9999,
+  sysex and string events, metronome and accent), and a `Transport` driven by a fake clock and a
+  recording sink (look-ahead windows, stop cutting notes and zeroing controllers, panic, resume,
+  seek with chase, count-in, `tickAt`); the `Recorder` with note pairing, filter, punch range
+  and both commit modes; finally every corpus sequence is rendered and its message count checked
+  against the model.
+- C API tests (`tests/capi_tests.c`, compiled as C11): model editing, maps and conversions,
+  settings, memory and file round trips through both formats, transport with callbacks,
+  rendering and recording through the C interface.
+- Corpus tests (`tests/corpus_tests.cpp`, data in `tests/data/`): the sequences defined in
+  `tests/corpus/sequences.cpp` were written by libsseq, loaded into Cakewalk Apprentice 1.04 under
   Wine and saved by it as `.WRK` and `.MID`, and the `.MID` was imported and saved again. The test
-  checks the generator is reproducible, the Apprentice files round-trip byte for byte, the model
-  read from them equals the song they were generated from, and export and import agree with
-  Apprentice's. `tests/data/README.md` has the provenance; `gencorpus` regenerates `src/`.
+  checks the generator is reproducible, the Cakewalk files round-trip byte for byte, the model
+  read from them equals the sequence they were generated from, and export and import agree with
+  Cakewalk's. `tests/data/README.md` has the provenance; `gencorpus` regenerates `src/`.
 - `sseqtool dump|info|roundtrip|convert|normalize`.
 - Swift consumption: a thin C API or Swift C++ interop (Xcode 15+) wrapped in a SwiftPM
   package is the next step for the app.

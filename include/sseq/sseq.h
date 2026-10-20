@@ -1,0 +1,384 @@
+/* libsseq C API.
+ *
+ * A flat C interface over the C++ library for use from Swift, Objective-C or C. Objects are
+ * opaque handles created with the _new and _read functions and released with the _free functions. Functions that can
+ * fail return 0 (or NULL) and leave a message in sseq_last_error(), which is per thread.
+ *
+ * Threading: a sequence, a transport and a recorder may each be used from one thread at a time. The
+ * usual arrangement is a sequence edited on the main thread and a transport pumped from a timer
+ * thread while the sequence is not being modified; a transport takes a snapshot of the sequence's
+ * events when it is created, so it is recreated after the sequence is edited.
+ */
+#ifndef SSEQ_H
+#define SSEQ_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* This is a C header: typedefs are the C spelling. */
+/* NOLINTBEGIN(modernize-use-using) */
+
+/* ---------------------------------------------------------------- basics */
+
+typedef int64_t sseq_tick;
+
+typedef struct sseq_sequence sseq_sequence;
+typedef struct sseq_transport sseq_transport;
+typedef struct sseq_recorder sseq_recorder;
+
+const char* sseq_version(void);
+/* The message of the last failure on this thread ("" when there was none). */
+const char* sseq_last_error(void);
+
+/* A byte buffer returned by the library; release with sseq_data_free. */
+typedef struct {
+    uint8_t* bytes;
+    size_t size;
+} sseq_data;
+void sseq_data_free(sseq_data* data);
+
+/* ---------------------------------------------------------------- events */
+
+typedef enum {
+    SSEQ_EVENT_NOTE = 0,
+    SSEQ_EVENT_KEY_AFTERTOUCH,
+    SSEQ_EVENT_CONTROLLER,
+    SSEQ_EVENT_PATCH,
+    SSEQ_EVENT_CHANNEL_AFTERTOUCH,
+    SSEQ_EVENT_PITCH_WHEEL,
+    SSEQ_EVENT_SYSEX,
+    SSEQ_EVENT_MCI_COMMAND,
+    SSEQ_EVENT_WAVE,
+    SSEQ_EVENT_TEXT
+} sseq_event_kind;
+
+/* Note: data1 key, data2 velocity, duration ticks. Key aftertouch: key, pressure. Controller:
+ * number, value. Patch: program. Channel aftertouch: pressure. Pitch wheel: data1 -8192..8191.
+ * Sysex: data1 bank index. String events carry a payload (see sseq_stream_event_payload). */
+typedef struct {
+    sseq_tick time;
+    sseq_event_kind kind;
+    uint8_t channel; /* 0..15 */
+    int data1;
+    int data2;
+    sseq_tick duration;
+} sseq_event;
+
+/* ---------------------------------------------------------------- sequence */
+
+sseq_sequence* sseq_sequence_new(void);
+sseq_sequence* sseq_sequence_copy(const sseq_sequence* sequence);
+void sseq_sequence_free(sseq_sequence* sequence);
+
+/* Files. `normalize` != 0 writes the chunk order Cakewalk uses and drops legacy chunks;
+ * 0 reproduces the layout of the file that was read. `port_meta` != 0 writes Cakewalk's "MIDI
+ * Port" meta event into .MID files. Readers return NULL on failure, writers 0. */
+sseq_sequence* sseq_sequence_read_wrk(const char* path);
+sseq_sequence* sseq_sequence_read_wrk_data(const uint8_t* bytes, size_t size);
+sseq_sequence* sseq_sequence_read_mid(const char* path);
+sseq_sequence* sseq_sequence_read_mid_data(const uint8_t* bytes, size_t size);
+int sseq_sequence_write_wrk(const sseq_sequence* sequence, const char* path, int normalize);
+int sseq_sequence_write_wrk_data(const sseq_sequence* sequence, int normalize, sseq_data* out);
+int sseq_sequence_write_mid(const sseq_sequence* sequence, const char* path, int port_meta);
+int sseq_sequence_write_mid_data(const sseq_sequence* sequence, int port_meta, sseq_data* out);
+
+int sseq_sequence_ppq(const sseq_sequence* sequence);
+void sseq_sequence_set_ppq(sseq_sequence* sequence, int ppq); /* does not rescale events */
+sseq_tick sseq_sequence_end_tick(const sseq_sequence* sequence);
+
+/* Comments (COMMENTS chunk) as text; the returned pointer is valid until the sequence changes. */
+const char* sseq_sequence_comments(const sseq_sequence* sequence);
+void sseq_sequence_set_comments(sseq_sequence* sequence, const char* text);
+
+/* Global settings (VARS chunk). */
+typedef enum {
+    SSEQ_VAR_NOW,                 /* ticks */
+    SSEQ_VAR_FROM,                /* ticks */
+    SSEQ_VAR_THRU,                /* ticks */
+    SSEQ_VAR_METRONOME_PLAYBACK,  /* 0/1 */
+    SSEQ_VAR_METRONOME_RECORDING, /* 0/1 */
+    SSEQ_VAR_METRONOME_ACCENT,    /* 0/1 */
+    SSEQ_VAR_COUNT_IN,            /* measures */
+    SSEQ_VAR_PATCH_SEARCH_BACK,   /* 0/1 */
+    SSEQ_VAR_ZERO_CONTROLLERS,    /* 0/1 */
+    SSEQ_VAR_THRU_ON,             /* 0/1, read only */
+    SSEQ_VAR_AUTO_RESTART,        /* 0/1, read only */
+    SSEQ_VAR_TRANSMIT_MIDI_SYNC   /* 0/1 */
+} sseq_var;
+int64_t sseq_sequence_var(const sseq_sequence* sequence, sseq_var var);
+int sseq_sequence_set_var(sseq_sequence* sequence, sseq_var var, int64_t value); /* 0 for a read-only var */
+
+typedef struct {
+    int port;     /* 0-based */
+    int channel;  /* 0-based */
+    int key;      /* 0..127 */
+    int velocity; /* 0 disables the metronome note */
+    int duration; /* ticks; 0 disables the metronome note */
+} sseq_metronome;
+void sseq_sequence_metronome(const sseq_sequence* sequence, sseq_metronome* out);
+void sseq_sequence_set_metronome(sseq_sequence* sequence, const sseq_metronome* metronome);
+
+typedef struct {
+    int mode;    /* 1 manual, 2 auto */
+    int port;    /* 0-based */
+    int channel; /* -1 none, 0..15 */
+    int key_plus;
+    int vel_plus;
+} sseq_thru;
+void sseq_sequence_thru(const sseq_sequence* sequence, sseq_thru* out);
+void sseq_sequence_set_thru(sseq_sequence* sequence, const sseq_thru* thru);
+
+/* ---------------------------------------------------------------- streams */
+
+typedef struct {
+    int number;        /* 0-based slot; the UI shows number + 1 */
+    int channel;       /* forced output channel 0..15, -1 none */
+    int key_plus;      /* -127..127 */
+    int vel_plus;      /* -127..127 */
+    int port;          /* 0-based */
+    int selected;      /* 0/1 */
+    int muted;         /* 0/1 */
+    int patch;         /* 0..127, -1 none */
+    int reps;          /* loop count 1..9999 (9999 = while other streams play), 0 none */
+    int has_time_plus; /* 0/1 */
+    sseq_tick time_plus;
+    int volume; /* 0..127, -1 none */
+    int pan;    /* 0..127, -1 none */
+} sseq_stream_params;
+
+/* Streams are addressed by index in file order (0..count-1), not by their number. */
+int sseq_sequence_stream_count(const sseq_sequence* sequence);
+int sseq_sequence_find_stream(const sseq_sequence* sequence, int number); /* index, or -1 */
+int sseq_sequence_add_stream(sseq_sequence* sequence, int number);        /* index of the (new or existing) stream */
+int sseq_sequence_remove_stream(sseq_sequence* sequence, int index);
+
+int sseq_stream_get_params(const sseq_sequence* sequence, int index, sseq_stream_params* out);
+int sseq_stream_set_params(sseq_sequence* sequence, int index,
+                           const sseq_stream_params* params);           /* number is not changed */
+const char* sseq_stream_name(const sseq_sequence* sequence, int index); /* valid until the sequence changes */
+int sseq_stream_set_name(sseq_sequence* sequence, int index, const char* name);
+sseq_tick sseq_stream_end_tick(const sseq_sequence* sequence, int index);
+
+size_t sseq_stream_event_count(const sseq_sequence* sequence, int index);
+int sseq_stream_event(const sseq_sequence* sequence, int index, size_t event_index, sseq_event* out);
+/* Payload of a string event (MCI command, Wave, Text); NULL for other kinds. */
+const uint8_t* sseq_stream_event_payload(const sseq_sequence* sequence, int index, size_t event_index, size_t* size);
+/* Inserts in time order and returns the new event's index (or SIZE_MAX on failure). */
+size_t sseq_stream_insert_event(sseq_sequence* sequence, int index, const sseq_event* event);
+size_t sseq_stream_insert_string_event(sseq_sequence* sequence, int index, sseq_tick time, sseq_event_kind kind,
+                                       const uint8_t* payload, size_t size);
+/* Replaces an event; if its time changed the events are re-sorted and the new index is returned. */
+size_t sseq_stream_set_event(sseq_sequence* sequence, int index, size_t event_index, const sseq_event* event);
+int sseq_stream_remove_event(sseq_sequence* sequence, int index, size_t event_index);
+int sseq_stream_clear_events(sseq_sequence* sequence, int index);
+
+/* ---------------------------------------------------------------- maps and time */
+
+typedef struct {
+    sseq_tick time;
+    int bpm100; /* beats per minute x 100 */
+} sseq_tempo;
+size_t sseq_sequence_tempo_count(const sseq_sequence* sequence);
+int sseq_sequence_tempo(const sseq_sequence* sequence, size_t index, sseq_tempo* out);
+void sseq_sequence_set_tempo(sseq_sequence* sequence, sseq_tick time, int bpm100); /* insert or replace */
+void sseq_sequence_remove_tempo(sseq_sequence* sequence, sseq_tick time);          /* not the one at time 0 */
+int sseq_sequence_tempo_at(const sseq_sequence* sequence, sseq_tick time, sseq_tempo* out);
+
+typedef struct {
+    int measure; /* 1-based */
+    int numerator;
+    int denominator_log2; /* 2 = quarter note */
+} sseq_meter;
+size_t sseq_sequence_meter_count(const sseq_sequence* sequence);
+int sseq_sequence_meter(const sseq_sequence* sequence, size_t index, sseq_meter* out);
+void sseq_sequence_set_meter(sseq_sequence* sequence, const sseq_meter* meter); /* insert or replace by measure */
+void sseq_sequence_remove_meter(sseq_sequence* sequence, int measure);          /* not measure 1 */
+int sseq_sequence_meter_at(const sseq_sequence* sequence, int measure, sseq_meter* out);
+
+typedef struct {
+    int measure;     /* 1-based */
+    int alterations; /* -7..7, negative = flats */
+} sseq_key;
+size_t sseq_sequence_key_count(const sseq_sequence* sequence);
+int sseq_sequence_key(const sseq_sequence* sequence, size_t index, sseq_key* out);
+void sseq_sequence_set_key(sseq_sequence* sequence, const sseq_key* key);
+void sseq_sequence_remove_key(sseq_sequence* sequence, int measure);
+int sseq_sequence_key_at(const sseq_sequence* sequence, int measure, sseq_key* out);
+
+typedef struct {
+    sseq_tick time;
+    int smpte_locked; /* 0/1 */
+} sseq_marker;
+size_t sseq_sequence_marker_count(const sseq_sequence* sequence);
+int sseq_sequence_marker(const sseq_sequence* sequence, size_t index, sseq_marker* out);
+const char* sseq_sequence_marker_name(const sseq_sequence* sequence, size_t index);
+size_t sseq_sequence_add_marker(sseq_sequence* sequence, const sseq_marker* marker, const char* name); /* index */
+int sseq_sequence_set_marker(sseq_sequence* sequence, size_t index, const sseq_marker* marker, const char* name);
+int sseq_sequence_remove_marker(sseq_sequence* sequence, size_t index);
+
+typedef enum { SSEQ_FPS_24 = 24, SSEQ_FPS_25 = 25, SSEQ_FPS_30_DROP = 29, SSEQ_FPS_30 = 30 } sseq_frame_rate;
+typedef struct {
+    sseq_frame_rate rate;
+    int64_t offset_frames;
+} sseq_timecode;
+void sseq_sequence_timecode(const sseq_sequence* sequence, sseq_timecode* out);
+void sseq_sequence_set_timecode(sseq_sequence* sequence, const sseq_timecode* timecode);
+
+typedef struct {
+    int measure; /* 1-based */
+    int beat;    /* 1-based */
+    int tick;
+} sseq_mbt;
+typedef struct {
+    int hours, minutes, seconds, frames;
+} sseq_hmsf;
+
+double sseq_sequence_tick_to_seconds(const sseq_sequence* sequence, sseq_tick tick);
+sseq_tick sseq_sequence_seconds_to_tick(const sseq_sequence* sequence, double seconds);
+void sseq_sequence_tick_to_mbt(const sseq_sequence* sequence, sseq_tick tick, sseq_mbt* out);
+sseq_tick sseq_sequence_mbt_to_tick(const sseq_sequence* sequence, const sseq_mbt* mbt);
+void sseq_sequence_tick_to_hmsf(const sseq_sequence* sequence, sseq_tick tick, sseq_hmsf* out);
+sseq_tick sseq_sequence_hmsf_to_tick(const sseq_sequence* sequence, const sseq_hmsf* hmsf);
+sseq_tick sseq_sequence_next_measure(const sseq_sequence* sequence, sseq_tick tick);
+sseq_tick sseq_sequence_prev_measure(const sseq_sequence* sequence, sseq_tick tick);
+sseq_tick sseq_sequence_measure_start(const sseq_sequence* sequence, int measure);
+/* Text forms ("12:3:045", "00:01:05:10"); the buffer gets at most `size` bytes including the
+ * terminator. Parsers return 0 when the text is not valid. */
+void sseq_format_mbt(const sseq_mbt* mbt, char* buffer, size_t size);
+int sseq_parse_mbt(const char* text, sseq_mbt* out);
+void sseq_format_hmsf(const sseq_hmsf* hmsf, char* buffer, size_t size);
+int sseq_parse_hmsf(const char* text, sseq_hmsf* out);
+
+/* ---------------------------------------------------------------- sysex banks */
+
+size_t sseq_sequence_sysex_bank_count(const sseq_sequence* sequence);
+const char* sseq_sequence_sysex_bank_name(const sseq_sequence* sequence, size_t index);
+const uint8_t* sseq_sequence_sysex_bank_data(const sseq_sequence* sequence, size_t index, size_t* size);
+int sseq_sequence_sysex_bank_auto_send(const sseq_sequence* sequence, size_t index);
+size_t sseq_sequence_set_sysex_bank(sseq_sequence* sequence, size_t index, const char* name, int auto_send,
+                                    const uint8_t* data, size_t size); /* index == count appends */
+
+/* ---------------------------------------------------------------- playback */
+
+/* A short MIDI message (1 to 3 bytes) at an absolute time on the application's clock. */
+typedef struct {
+    double time;
+    int port; /* 0-based output port as in the sequence */
+    uint8_t size;
+    uint8_t data[3];
+} sseq_midi_message;
+
+typedef struct {
+    double look_ahead;          /* seconds scheduled ahead of the clock by each pump (0.1) */
+    double tempo_ratio;         /* playback speed (1.0) */
+    int send_stream_parameters; /* patch, volume, pan of each stream at start (1) */
+    int chase;                  /* patch/controller search-back at start (1) */
+    int zero_controllers_on_stop;
+    int send_sysex_banks;
+    int has_loop; /* auto-shuttle between loop_from and loop_thru */
+    sseq_tick loop_from;
+    sseq_tick loop_thru;
+    int metronome;
+    int metronome_accent;
+    int count_in_measures;
+    int stop_at_end; /* 0 while recording */
+} sseq_playback_options;
+void sseq_playback_options_default(sseq_playback_options* out);
+/* Options from the sequence's own settings; `recording` != 0 picks the recording metronome, count-in
+ * and running past the end. */
+void sseq_playback_options_from_sequence(const sseq_sequence* sequence, int recording, sseq_playback_options* out);
+
+/* The application's clock and MIDI output. `now` returns monotonic seconds; `send` and `send_sysex`
+ * receive messages with timestamps up to look_ahead in the future and must deliver them at those
+ * times; `flush` (optional) is called at the end of every pump; `string_event` (optional) receives
+ * Text, MCI command and Wave events when their time comes. All run on the thread that pumps. */
+typedef struct {
+    void* context;
+    double (*now)(void* context);
+    void (*send)(void* context, const sseq_midi_message* message);
+    void (*send_sysex)(void* context, double time, int port, const uint8_t* bytes, size_t size);
+    void (*flush)(void* context);
+    void (*string_event)(void* context, int stream_number, const sseq_event* event, const uint8_t* payload,
+                         size_t payload_size, double time);
+} sseq_transport_callbacks;
+
+/* The sequence must outlive the transport and must not be modified while the transport plays. The
+ * transport takes a snapshot of the events when it is created, so after an edit a new transport is
+ * needed to hear the change. `options` may be NULL for the defaults. */
+sseq_transport* sseq_transport_new(const sseq_sequence* sequence, const sseq_transport_callbacks* callbacks,
+                                   const sseq_playback_options* options);
+void sseq_transport_free(sseq_transport* transport);
+
+void sseq_transport_options(const sseq_transport* transport, sseq_playback_options* out);
+void sseq_transport_set_options(sseq_transport* transport, const sseq_playback_options* options);
+void sseq_transport_set_tempo_ratio(sseq_transport* transport, double ratio);
+
+void sseq_transport_play(sseq_transport* transport);
+void sseq_transport_stop(sseq_transport* transport);
+void sseq_transport_panic(sseq_transport* transport);
+void sseq_transport_rewind(sseq_transport* transport);
+void sseq_transport_seek(sseq_transport* transport, sseq_tick tick);
+int sseq_transport_playing(const sseq_transport* transport);
+int sseq_transport_counting_in(const sseq_transport* transport);
+sseq_tick sseq_transport_now(const sseq_transport* transport);
+sseq_tick sseq_transport_end_tick(const sseq_transport* transport);
+/* Sequence position of a clock time while playing (past the count-in); 0 and *valid = 0 otherwise. */
+sseq_tick sseq_transport_tick_at(const sseq_transport* transport, double time, int* valid);
+
+void sseq_transport_set_muted(sseq_transport* transport, int stream_number, int muted);
+void sseq_transport_set_solo(sseq_transport* transport, int stream_number, int solo);
+int sseq_transport_audible(const sseq_transport* transport, int stream_number);
+
+/* Schedules everything up to now + look_ahead. Call every 10-20 ms while playing. Returns 0 once
+ * playback has stopped by itself. */
+int sseq_transport_pump(sseq_transport* transport);
+
+/* Offline rendering of [from, thru) (thru < 0: the end) with times in seconds from `from`.
+ * Release the result with sseq_render_free. `options` may be NULL. */
+int sseq_render(const sseq_sequence* sequence, const sseq_playback_options* options, sseq_tick from, sseq_tick thru,
+                sseq_midi_message** out, size_t* count);
+void sseq_render_free(sseq_midi_message* messages);
+
+/* ---------------------------------------------------------------- recording */
+
+typedef struct {
+    int notes;
+    int controllers;
+    int patches;
+    int pitch_wheel;
+    int aftertouch;
+    int has_punch; /* keep only events in [punch_in, punch_out) */
+    sseq_tick punch_in;
+    sseq_tick punch_out;
+} sseq_record_options;
+void sseq_record_options_default(sseq_record_options* out);
+
+/* The transport must outlive the recorder. `options` may be NULL. */
+sseq_recorder* sseq_recorder_new(const sseq_transport* transport, const sseq_record_options* options);
+void sseq_recorder_free(sseq_recorder* recorder);
+void sseq_recorder_options(const sseq_recorder* recorder, sseq_record_options* out);
+void sseq_recorder_set_options(sseq_recorder* recorder, const sseq_record_options* options);
+
+/* Input with its arrival time on the transport's clock; only input received while the transport
+ * plays (past the count-in) is recorded. */
+void sseq_recorder_receive(sseq_recorder* recorder, const sseq_midi_message* message);
+void sseq_recorder_finish(sseq_recorder* recorder, double time); /* closes held notes */
+size_t sseq_recorder_count(const sseq_recorder* recorder);
+int sseq_recorder_event(const sseq_recorder* recorder, size_t index, sseq_event* out);
+void sseq_recorder_clear(sseq_recorder* recorder);
+/* Merges the take into a stream of the sequence (sound on sound) and clears it; with `replace` != 0 the
+ * stream's events starting in [from, thru) are removed first. */
+int sseq_recorder_commit(sseq_recorder* recorder, sseq_sequence* sequence, int stream_index, int replace,
+                         sseq_tick from, sseq_tick thru);
+
+/* NOLINTEND(modernize-use-using) */
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* SSEQ_H */

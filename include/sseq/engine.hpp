@@ -7,7 +7,7 @@
 // MIDI port.
 #pragma once
 
-#include "song.hpp"
+#include "sequence.hpp"
 #include "types.hpp"
 
 #include <array>
@@ -23,7 +23,7 @@ namespace sseq::engine {
 /// A short MIDI message (1 to 3 bytes) to deliver at an absolute clock time.
 struct MidiMessage {
     double time = 0; // seconds on the Clock's timeline
-    int port = 0;    // 0-based output port, as in the song
+    int port = 0;    // 0-based output port, as in the sequence
     std::uint8_t size = 0;
     std::array<std::uint8_t, 3> data{};
 
@@ -74,26 +74,33 @@ private:
 };
 
 struct PlaybackOptions {
-    double lookAhead = 0.1;          // seconds scheduled ahead of the clock by each pump()
-    double tempoRatio = 1.0;         // playback speed (Cakewalk's 0.50 / 1.00 / 2.00 buttons)
-    bool sendTrackParameters = true; // patch, volume, pan of each track at start
-    bool chase = true; // on start, send the last patch/controller/wheel before the position ("search-back")
-    bool zeroControllersOnStop = false; // on stop, reset mod wheel, sustain, pitch wheel, channel pressure
+    double lookAhead = 0.1;           // seconds scheduled ahead of the clock by each pump()
+    double tempoRatio = 1.0;          // playback speed (Cakewalk's 0.50 / 1.00 / 2.00 buttons)
+    bool sendStreamParameters = true; // patch, volume, pan of each stream at start
+    bool chase = true; // on start, send the last patch, pitch wheel, modulation and sustain before the position
+                       // on every channel used ("patch/controller search-back")
+    bool zeroControllersOnStop = false; // on stop, lift sustain, zero modulation, centre the pitch wheel and send
+                                        // "reset all controllers" on every channel of every port in use
     bool sendSysexBanks = true;         // play sysex events (the bank's bytes)
     std::optional<Tick> loopFrom;       // auto-shuttle: when the position reaches loopThru, continue at loopFrom
     std::optional<Tick> loopThru;
+    bool metronome = false;       // play the sequence's metronome note on every beat
+    bool metronomeAccent = false; // first beat of each measure at full velocity, other beats softer
+    int countInMeasures = 0;      // measures of metronome before the start position (recording)
+    bool stopAtEnd = true;        // stop when the last event has played; false while recording
 
-    /// Options taken from the song's own settings (VARS): chase and zero-controllers flags.
-    [[nodiscard]] static PlaybackOptions fromSong(const Song& song);
+    /// Options taken from the sequence's own settings (VARS): chase and zero-controllers flags, metronome
+    /// during playback or recording (with count-in and accent); recording runs past the end.
+    [[nodiscard]] static PlaybackOptions fromSequence(const Sequence& sequence, bool recording = false);
 };
 
 /// Called when a string event (Text, MCI command, Wave) reaches its time. Runs inside pump().
-using StringEventHandler = std::function<void(int trackNumber, const Event& event, double time)>;
+using StringEventHandler = std::function<void(int streamNumber, const Event& event, double time)>;
 
 class Transport {
 public:
-    /// The song must outlive the transport and must not be modified while playing.
-    Transport(const Song& song, Clock& clock, MidiSink& sink, PlaybackOptions options = {});
+    /// The sequence must outlive the transport and must not be modified while playing.
+    Transport(const Sequence& sequence, Clock& clock, MidiSink& sink, PlaybackOptions options = {});
     ~Transport();
     Transport(const Transport&) = delete;
     Transport& operator=(const Transport&) = delete;
@@ -107,15 +114,20 @@ public:
 
     void play();
     void stop();
+    void panic();         // stop, then all-notes-off and controller reset on every channel of every port
     void rewind();        // stop and go to tick 0
     void seek(Tick tick); // while playing: notes are cut and playback continues from `tick`
     [[nodiscard]] bool playing() const noexcept;
+    [[nodiscard]] bool countingIn() const;       // playing, but still inside the count-in
     [[nodiscard]] Tick now() const;              // current position (advances with the clock while playing)
     [[nodiscard]] Tick endTick() const noexcept; // end of the last event
+    /// The sequence position a clock time corresponds to, while playing and past the count-in (for
+    /// recording); nullopt otherwise.
+    [[nodiscard]] std::optional<Tick> tickAt(double time) const;
 
-    void setMuted(int trackNumber, bool muted); // overrides the track's own mute flag
-    void setSolo(int trackNumber, bool solo);   // when any track is soloed, only soloed tracks play
-    [[nodiscard]] bool isAudible(int trackNumber) const;
+    void setMuted(int streamNumber, bool muted); // overrides the stream's own mute flag
+    void setSolo(int streamNumber, bool solo);   // when any stream is soloed, only soloed streams play
+    [[nodiscard]] bool isAudible(int streamNumber) const;
 
     /// Schedules everything up to clock.now() + lookAhead. Call every few milliseconds while
     /// playing (a 10-20 ms timer is fine). Returns false once playback has stopped by itself.
@@ -126,9 +138,9 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-/// Offline rendering: every message of the song between `from` and `thru` (default: the end),
+/// Offline rendering: every message of the sequence between `from` and `thru` (default: the end),
 /// with times in seconds from `from`, as the Transport would produce them without a clock.
-[[nodiscard]] std::vector<MidiMessage> render(const Song& song, const PlaybackOptions& options = {}, Tick from = 0,
-                                              std::optional<Tick> thru = std::nullopt);
+[[nodiscard]] std::vector<MidiMessage> render(const Sequence& sequence, const PlaybackOptions& options = {},
+                                              Tick from = 0, std::optional<Tick> thru = std::nullopt);
 
 } // namespace sseq::engine

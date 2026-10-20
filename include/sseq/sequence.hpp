@@ -1,4 +1,4 @@
-// libsseq: the song model (TTSSEQ "sequence" with its "streams").
+// libsseq: the sequence model (TTSSEQ "sequence" with its "streams").
 #pragma once
 
 #include "event.hpp"
@@ -13,8 +13,8 @@
 
 namespace sseq {
 
-/// A track (TTSSEQ "stream"). `number` is the 0-based slot in the file; the UI shows number + 1.
-struct Track {
+/// A stream (TTSSEQ "stream"). `number` is the 0-based slot in the file; the UI shows number + 1.
+struct Stream {
     int number = 0;
     std::string name; // full name (TRKNAME chunk); the TRACK chunk holds it split into two 15-character fields
     std::optional<std::uint8_t> channel; // forced output channel, nullopt = none (255 in file)
@@ -133,14 +133,14 @@ struct UnknownChunk {
 };
 
 /// One entry of the file layout, recorded on read so that a write can reproduce the
-/// original chunk order. `index` is the track number (track-scoped chunks) or the index
+/// original chunk order. `index` is the stream number (stream-scoped chunks) or the index
 /// into the sysex-bank or unknown-chunk list; -1 otherwise.
 struct LayoutEntry {
     std::uint8_t type = 0;
     int index = -1;
 };
 
-struct Song {
+struct Sequence {
     // Header
     int versionMajor = 2;
     int versionMinor = 0;
@@ -157,20 +157,20 @@ struct Song {
     Metronome metronome;
     Thru thru;
     std::vector<Marker> markers;
-    std::vector<Track> tracks;                         // in file order
+    std::vector<Stream> streams;                       // in file order
     std::optional<std::vector<std::uint8_t>> comments; // raw bytes of the COMMENTS chunk body
     std::vector<SysxBank> sysxBanks;
     std::vector<UnknownChunk> unknownChunks;
-    std::vector<LayoutEntry> layout; // chunk order as read; empty for a new song
+    std::vector<LayoutEntry> layout; // chunk order as read; empty for a new sequence
 
-    Song();
+    Sequence();
 
-    [[nodiscard]] Track* findTrack(int number) noexcept;
-    [[nodiscard]] const Track* findTrack(int number) const noexcept;
-    [[nodiscard]] Track& track(int number); // creates the track if missing, keeps file order
+    [[nodiscard]] Stream* findStream(int number) noexcept;
+    [[nodiscard]] const Stream* findStream(int number) const noexcept;
+    [[nodiscard]] Stream& stream(int number); // creates the stream if missing, keeps file order
     [[nodiscard]] std::string commentsText() const;
     void setComments(const std::string& text);
-    [[nodiscard]] Tick endTime() const noexcept; // last event end over all tracks
+    [[nodiscard]] Tick endTime() const noexcept; // last event end over all streams
 
     /// Keep the maps' ppq in sync after changing `ppq`.
     void syncPpq() noexcept {

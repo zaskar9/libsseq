@@ -1,4 +1,9 @@
-// libsseq: Standard MIDI File reader and writer with the Cakewalk Apprentice 1.04 mapping.
+// libsseq: Standard MIDI File reader and writer with Cakewalk's mapping, as observed in Cakewalk Apprentice 1.04.
+//
+// Terminology: "track" here is the file's MTrk chunk, as in the SMF specification; "stream" is the
+// sequence's stream (TTSSEQ's word for what the Cakewalk UI shows as a track). The engine maps the
+// two the way SeqSaveMidiFile does: track 0 carries the maps and markers, every non-empty stream
+// becomes one track, and on load every track after the conductor track becomes one stream.
 #include "sseq/smf.hpp"
 #include "bytes.hpp"
 
@@ -11,8 +16,8 @@
 
 namespace sseq::smf {
 
-using detail::Reader;
-using detail::Writer;
+using bytes::Reader;
+using bytes::Writer;
 
 namespace {
 
@@ -58,7 +63,7 @@ std::vector<std::uint8_t> metaBytes(const std::uint8_t type, const std::vector<s
     Writer w;
     w.u8(0xff);
     w.u8(type);
-    w.vlq(detail::u32(data.size()));
+    w.vlq(bytes::u32(data.size()));
     w.bytes(data);
     return std::move(w.out);
 }
@@ -78,10 +83,10 @@ void writeTrack(Writer& w, std::vector<Item>& items) {
     Tick last = 0;
     int running = -1;
     for (const Item& it : items) {
-        t.vlq(detail::u32(it.time - last));
+        t.vlq(bytes::u32(it.time - last));
         last = it.time;
         if (it.meta) {
-            t.bytes(it.bytes); // meta events do not interrupt running status in Apprentice's files
+            t.bytes(it.bytes); // meta events do not interrupt running status in Cakewalk's files
             continue;
         }
         if (it.explicitStatus) {
@@ -101,12 +106,12 @@ void writeTrack(Writer& w, std::vector<Item>& items) {
     t.u8(kMetaEnd);
     t.u8(0);
     w.str(std::string(kTrackMagic));
-    w.be32(detail::u32(t.size()));
+    w.be32(bytes::u32(t.size()));
     w.bytes(t.out);
 }
 
 constexpr std::uint8_t clamp7(const int v) noexcept {
-    return detail::u8(std::clamp(v, 0, 127));
+    return bytes::u8(std::clamp(v, 0, 127));
 }
 
 std::vector<std::uint8_t> channelMessage(const std::uint8_t status, const std::uint8_t d1) {
@@ -120,58 +125,57 @@ std::vector<std::uint8_t> channelMessage(const std::uint8_t status, const std::u
 
 // ---------------------------------------------------------------- writing
 
-std::vector<std::uint8_t> write(const Song& song, const WriteOptions& options) {
-    auto nonEmpty = song.tracks | std::views::filter([](const Track& t) { return !t.events.empty(); });
+std::vector<std::uint8_t> write(const Sequence& sequence, const WriteOptions& options) {
+    auto nonEmpty = sequence.streams | std::views::filter([](const Stream& t) { return !t.events.empty(); });
     const auto trackCount = static_cast<std::size_t>(std::ranges::distance(nonEmpty));
 
     Writer w;
     w.str(std::string(kHeaderMagic));
     w.be32(6);
     w.be16(1);
-    w.be16(detail::u32(1 + trackCount));
-    w.be16(detail::u32(song.ppq));
+    w.be16(bytes::u32(1 + trackCount));
+    w.be16(bytes::u32(sequence.ppq));
 
-    // Track 0: meter, key, tempo, markers.
+    // Track 0 (the conductor track): meter, key, tempo, markers.
     std::vector<Item> items;
-    items.reserve(song.meterMap.entries.size() + song.keyMap.size() + song.tempoMap.entries.size() +
-                  song.markers.size());
-    for (const MeterEntry& m : song.meterMap.entries) {
+    items.reserve(sequence.meterMap.entries.size() + sequence.keyMap.size() + sequence.tempoMap.entries.size() +
+                  sequence.markers.size());
+    for (const MeterEntry& m : sequence.meterMap.entries) {
         // MIDI clocks per metronome click: 24 per quarter note, scaled by the denominator.
-        const std::uint8_t clocks = detail::u8(96 / m.denominator());
-        items.push_back({song.meterMap.measureStart(m.measure), kOrderTimeSig,
-                         metaBytes(kMetaTimeSig, {detail::u8(m.numerator), detail::u8(m.denominatorLog2), clocks, 8}),
+        const std::uint8_t clocks = bytes::u8(96 / m.denominator());
+        items.push_back({sequence.meterMap.measureStart(m.measure), kOrderTimeSig,
+                         metaBytes(kMetaTimeSig, {bytes::u8(m.numerator), bytes::u8(m.denominatorLog2), clocks, 8}),
                          true});
     }
-    for (const KeyEntry& k : song.keyMap) {
-        items.push_back({song.meterMap.measureStart(k.measure), kOrderKeySig,
-                         metaBytes(kMetaKeySig, {detail::s8(k.alterations), 0}), true});
+    for (const KeyEntry& k : sequence.keyMap) {
+        items.push_back({sequence.meterMap.measureStart(k.measure), kOrderKeySig,
+                         metaBytes(kMetaKeySig, {bytes::s8(k.alterations), 0}), true});
     }
-    for (const TempoEntry& e : song.tempoMap.entries) {
+    for (const TempoEntry& e : sequence.tempoMap.entries) {
         const auto usec = static_cast<std::uint32_t>(60.0e6 * 100.0 / e.bpm100);
         items.push_back({e.time, kOrderTempo,
-                         metaBytes(kMetaTempo, {detail::u8(usec >> 16), detail::u8(usec >> 8), detail::u8(usec)}),
-                         true});
+                         metaBytes(kMetaTempo, {bytes::u8(usec >> 16), bytes::u8(usec >> 8), bytes::u8(usec)}), true});
     }
-    for (const Marker& m : song.markers) {
+    for (const Marker& m : sequence.markers) {
         items.push_back({m.time, kOrderMarker, metaString(m.smpteLocked ? kMetaCue : kMetaMarker, m.name), true});
     }
     writeTrack(w, items);
 
-    // Song tracks.
-    for (const Track& t : nonEmpty) {
+    // One track per non-empty stream.
+    for (const Stream& t : nonEmpty) {
         items.clear();
         if (options.portMeta) {
             items.push_back({0, kOrderPort, metaBytes(kMetaPort, {t.port}), true});
         }
         items.push_back({0, kOrderName, metaString(kMetaTrackName, t.name), true});
-        // Parameters go on the forced channel, or on the channel of the track's first MIDI event.
+        // Parameters go on the forced channel, or on the channel of the stream's first MIDI event.
         std::uint8_t forced = 0;
         if (t.channel) {
             forced = *t.channel;
         } else if (const auto first = std::ranges::find_if(t.events, &Event::isMidi); first != t.events.end()) {
             forced = first->channel;
         }
-        // The track parameters are written with explicit status bytes (no running status).
+        // The stream parameters are written with explicit status bytes (no running status).
         if (t.patch) {
             items.push_back({0, kOrderPatch, channelMessage(0xc0 | forced, clamp7(*t.patch)), false, true});
         }
@@ -182,8 +186,8 @@ std::vector<std::uint8_t> write(const Song& song, const WriteOptions& options) {
             items.push_back({0, kOrderPan, channelMessage(0xb0 | forced, 10, clamp7(*t.pan)), false, true});
         }
         // Note-offs go before any note-on at the same tick. Among note-offs at the same tick, the
-        // note that started later comes first (observed in Apprentice's output); notes that started
-        // together keep their stream order.
+        // note that started later comes first (observed in Cakewalk's output); notes that started
+        // together keep their order in the stream.
         for (const Event& e : t.events) {
             const std::uint8_t ch = t.channel ? *t.channel : e.channel;
             switch (e.kind) {
@@ -211,7 +215,7 @@ std::vector<std::uint8_t> write(const Song& song, const WriteOptions& options) {
             case EventKind::PitchWheel: {
                 const int v = e.data1 + 8192;
                 items.push_back({e.time, kOrderEvent,
-                                 channelMessage(0xe0 | ch, detail::u8(v & 0x7f), detail::u8((v >> 7) & 0x7f)), false});
+                                 channelMessage(0xe0 | ch, bytes::u8(v & 0x7f), bytes::u8((v >> 7) & 0x7f)), false});
                 break;
             }
             case EventKind::Text:
@@ -220,7 +224,7 @@ std::vector<std::uint8_t> write(const Song& song, const WriteOptions& options) {
             case EventKind::Sysex:
             case EventKind::MciCommand:
             case EventKind::Wave:
-                break; // not exported by Apprentice
+                break; // not exported by Cakewalk
             }
         }
         writeTrack(w, items);
@@ -228,8 +232,8 @@ std::vector<std::uint8_t> write(const Song& song, const WriteOptions& options) {
     return std::move(w.out);
 }
 
-void writeFile(const Song& song, const std::string& path, const WriteOptions& options) {
-    detail::writeFileBytes(path, write(song, options));
+void writeFile(const Sequence& sequence, const std::string& path, const WriteOptions& options) {
+    bytes::writeFileBytes(path, write(sequence, options));
 }
 
 // ---------------------------------------------------------------- reading
@@ -247,9 +251,9 @@ void putByMeasure(std::vector<Entry>& entries, const Entry& e) {
     entries.insert(pos, e);
 }
 
-void importTrack(Song& song, Reader& r, const int trackNumber, const bool conductor) {
-    Track t;
-    t.number = trackNumber;
+void importTrack(Sequence& sequence, Reader& r, const int streamNumber, const bool conductor) {
+    Stream t;
+    t.number = streamNumber;
     bool haveParams = false;
     std::optional<std::uint8_t> firstChannel;
     std::map<int, std::vector<std::size_t>> open; // (channel << 8 | key) -> indices of open notes
@@ -290,32 +294,32 @@ void importTrack(Song& song, Reader& r, const int trackNumber, const bool conduc
                 m.time = time;
                 m.smpteLocked = type == kMetaCue;
                 m.name = s;
-                song.markers.push_back(std::move(m));
+                sequence.markers.push_back(std::move(m));
                 break;
             }
             case kMetaTempo:
                 if (d.size() == 3) {
-                    const std::uint32_t usec = detail::le(d[2], d[1], d[0], 0);
+                    const std::uint32_t usec = bytes::le(d[2], d[1], d[0], 0);
                     if (usec != 0) {
-                        song.tempoMap.set(time, static_cast<int>(std::lround(60.0e6 * 100.0 / usec)));
+                        sequence.tempoMap.set(time, static_cast<int>(std::lround(60.0e6 * 100.0 / usec)));
                     }
                 }
                 break;
             case kMetaTimeSig:
                 if (d.size() >= 2) {
                     MeterEntry m;
-                    m.measure = song.meterMap.measureAt(time);
+                    m.measure = sequence.meterMap.measureAt(time);
                     m.numerator = d[0];
                     m.denominatorLog2 = d[1];
-                    putByMeasure(song.meterMap.entries, m);
+                    putByMeasure(sequence.meterMap.entries, m);
                 }
                 break;
             case kMetaKeySig:
                 if (!d.empty()) {
                     KeyEntry k;
-                    k.measure = song.meterMap.measureAt(time);
+                    k.measure = sequence.meterMap.measureAt(time);
                     k.alterations = static_cast<std::int8_t>(d[0]);
-                    putByMeasure(song.keyMap, k);
+                    putByMeasure(sequence.keyMap, k);
                 }
                 break;
             default:
@@ -337,7 +341,7 @@ void importTrack(Song& song, Reader& r, const int trackNumber, const bool conduc
             if (running < 0) {
                 throw Error("running status without status byte");
             }
-            status = detail::u8(running);
+            status = bytes::u8(running);
             d1 = b;
         }
         const std::uint8_t ch = status & 0x0fU;
@@ -360,7 +364,7 @@ void importTrack(Song& song, Reader& r, const int trackNumber, const bool conduc
                 open[k].push_back(t.events.size());
                 t.events.push_back(e);
             } else if (!open[k].empty()) {
-                // Apprentice pairs a note-off with the most recent open note of that key.
+                // Cakewalk pairs a note-off with the most recent open note of that key.
                 Event& on = t.events[open[k].back()];
                 on.duration = std::max<Tick>(1, time - on.time);
                 open[k].pop_back();
@@ -413,12 +417,12 @@ void importTrack(Song& song, Reader& r, const int trackNumber, const bool conduc
     }
     t.channel = firstChannel;
     sortEvents(t.events);
-    song.tracks.push_back(std::move(t));
+    sequence.streams.push_back(std::move(t));
 }
 
 } // namespace
 
-Song read(const std::vector<std::uint8_t>& bytes) {
+Sequence read(const std::vector<std::uint8_t>& bytes) {
     Reader r(bytes);
     if (r.remaining() < 14 || r.str(kHeaderMagic.size()) != kHeaderMagic) {
         throw Error("not a Standard MIDI File");
@@ -436,12 +440,12 @@ Song read(const std::vector<std::uint8_t>& bytes) {
     if ((division & 0x8000) != 0) {
         throw Error("SMPTE time division is not supported");
     }
-    Song song;
-    song.ppq = division;
-    song.syncPpq();
-    song.tempoMap.entries.clear();
-    song.tempoMap.set(0, 12000);
-    song.layout.clear();
+    Sequence sequence;
+    sequence.ppq = division;
+    sequence.syncPpq();
+    sequence.tempoMap.entries.clear();
+    sequence.tempoMap.set(0, 12000);
+    sequence.layout.clear();
     int number = 0;
     for (int i = 0; i < ntrks && !r.atEnd(); ++i) {
         if (r.str(kTrackMagic.size()) != kTrackMagic) {
@@ -450,17 +454,17 @@ Song read(const std::vector<std::uint8_t>& bytes) {
         const std::uint32_t len = r.be32();
         Reader t(r.ptr(), len);
         r.skip(len);
-        const std::size_t before = song.tracks.size();
-        importTrack(song, t, number, format == 1 && i == 0);
-        if (song.tracks.size() > before) {
+        const std::size_t before = sequence.streams.size();
+        importTrack(sequence, t, number, format == 1 && i == 0);
+        if (sequence.streams.size() > before) {
             ++number;
         }
     }
-    return song;
+    return sequence;
 }
 
-Song readFile(const std::string& path) {
-    return read(detail::readFileBytes(path));
+Sequence readFile(const std::string& path) {
+    return read(bytes::readFileBytes(path));
 }
 
 // ---------------------------------------------------------------- dump
@@ -502,7 +506,7 @@ std::string dump(const std::vector<std::uint8_t>& bytes) {
                     const std::vector<std::uint8_t> d = t.bytes(n);
                     os << "  t=" << time << " meta " << static_cast<int>(type);
                     if (type == kMetaTempo && n == 3) {
-                        os << " tempo " << detail::le(d[2], d[1], d[0], 0) << " usec/qn";
+                        os << " tempo " << bytes::le(d[2], d[1], d[0], 0) << " usec/qn";
                     } else if (type == kMetaTimeSig && n >= 2) {
                         os << " timesig " << static_cast<int>(d[0]) << "/" << (1 << d[1]);
                     } else if (type == kMetaKeySig && n >= 2) {
@@ -534,7 +538,7 @@ std::string dump(const std::vector<std::uint8_t>& bytes) {
                     running = b;
                     d1 = t.u8();
                 } else {
-                    status = detail::u8(running);
+                    status = bytes::u8(running);
                     d1 = b;
                 }
                 const int kind = status & 0xf0;

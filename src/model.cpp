@@ -1,6 +1,6 @@
-// libsseq: model implementation (events, tracks, song, maps, time conversions).
+// libsseq: model implementation (events, streams, sequence, maps, time conversions).
 #include "bytes.hpp"
-#include "sseq/song.hpp"
+#include "sseq/sequence.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -69,13 +69,13 @@ void sortEvents(std::vector<Event>& events) {
     std::ranges::stable_sort(events, {}, &Event::time);
 }
 
-// ---------------------------------------------------------------- tracks
+// ---------------------------------------------------------------- streams
 
-bool Track::hasStringEvents() const noexcept {
+bool Stream::hasStringEvents() const noexcept {
     return std::ranges::any_of(events, &Event::isString);
 }
 
-Tick Track::endTime() const noexcept {
+Tick Stream::endTime() const noexcept {
     if (events.empty()) {
         return 0;
     }
@@ -85,7 +85,7 @@ Tick Track::endTime() const noexcept {
 // ---------------------------------------------------------------- vars
 
 Vars::Vars() {
-    // Defaults as written by Cakewalk Apprentice 1.04 for a plain song.
+    // Defaults as written by Cakewalk (observed in Cakewalk Apprentice 1.04) for a plain sequence.
     static constexpr std::array<std::uint8_t, kSize> kDefault = {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xff,
@@ -97,43 +97,43 @@ Vars::Vars() {
 }
 
 std::uint32_t Vars::u32(const std::size_t off) const noexcept {
-    return detail::le(raw[off], raw[off + 1], raw[off + 2], raw[off + 3]);
+    return bytes::le(raw[off], raw[off + 1], raw[off + 2], raw[off + 3]);
 }
 
 void Vars::setU32(const std::size_t off, const std::uint32_t v) noexcept {
-    raw[off] = detail::u8(v);
-    raw[off + 1] = detail::u8(v >> 8);
-    raw[off + 2] = detail::u8(v >> 16);
-    raw[off + 3] = detail::u8(v >> 24);
+    raw[off] = bytes::u8(v);
+    raw[off + 1] = bytes::u8(v >> 8);
+    raw[off + 2] = bytes::u8(v >> 16);
+    raw[off + 3] = bytes::u8(v >> 24);
 }
 
-// ---------------------------------------------------------------- song
+// ---------------------------------------------------------------- sequence
 
-Song::Song() {
+Sequence::Sequence() {
     syncPpq();
 }
 
-Track* Song::findTrack(const int number) noexcept {
-    const auto it = std::ranges::find(tracks, number, &Track::number);
-    return it == tracks.end() ? nullptr : &*it;
+Stream* Sequence::findStream(const int number) noexcept {
+    const auto it = std::ranges::find(streams, number, &Stream::number);
+    return it == streams.end() ? nullptr : &*it;
 }
 
-const Track* Song::findTrack(const int number) const noexcept {
-    const auto it = std::ranges::find(tracks, number, &Track::number);
-    return it == tracks.end() ? nullptr : &*it;
+const Stream* Sequence::findStream(const int number) const noexcept {
+    const auto it = std::ranges::find(streams, number, &Stream::number);
+    return it == streams.end() ? nullptr : &*it;
 }
 
-Track& Song::track(const int number) {
-    if (Track* t = findTrack(number)) {
+Stream& Sequence::stream(const int number) {
+    if (Stream* t = findStream(number)) {
         return *t;
     }
-    Track t;
+    Stream t;
     t.number = number;
-    const auto pos = std::ranges::find_if(tracks, [number](const Track& x) { return x.number > number; });
-    return *tracks.insert(pos, std::move(t));
+    const auto pos = std::ranges::find_if(streams, [number](const Stream& x) { return x.number > number; });
+    return *streams.insert(pos, std::move(t));
 }
 
-std::string Song::commentsText() const {
+std::string Sequence::commentsText() const {
     if (!comments) {
         return {};
     }
@@ -144,15 +144,15 @@ std::string Song::commentsText() const {
     return s;
 }
 
-void Song::setComments(const std::string& text) {
+void Sequence::setComments(const std::string& text) {
     comments = std::vector<std::uint8_t>(text.begin(), text.end());
 }
 
-Tick Song::endTime() const noexcept {
-    if (tracks.empty()) {
+Tick Sequence::endTime() const noexcept {
+    if (streams.empty()) {
         return 0;
     }
-    return std::ranges::max(tracks | std::views::transform(&Track::endTime));
+    return std::ranges::max(streams | std::views::transform(&Stream::endTime));
 }
 
 // ---------------------------------------------------------------- tempo map
@@ -381,7 +381,7 @@ bool parseHMSF(const std::string& s, HMSF& out) {
 
 // ---------------------------------------------------------------- file helpers
 
-namespace detail {
+namespace bytes {
 
 std::vector<std::uint8_t> readFileBytes(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -400,5 +400,5 @@ void writeFileBytes(const std::string& path, const std::vector<std::uint8_t>& by
     out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 }
 
-} // namespace detail
+} // namespace bytes
 } // namespace sseq

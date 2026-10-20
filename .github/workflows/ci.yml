@@ -38,6 +38,9 @@ jobs:
         run: ctest --test-dir build --build-config Release --output-on-failure
       - name: Round-trip the corpus with sseqtool
         run: ./build/sseqtool roundtrip tests/data/app/*.WRK tests/data/mid2wrk/*.WRK
+      - name: Swift package (macOS)
+        if: runner.os == 'macOS'
+        run: swift build -c release
 
   lint:
     name: clang-format and clang-tidy
@@ -48,8 +51,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang clang-format clang-tidy
       - name: clang-format
         run: |
-          clang-format --dry-run --Werror include/sseq/*.hpp src/*.cpp src/*.hpp tools/*.cpp \
-            tests/*.cpp tests/*.hpp tests/corpus/*.cpp tests/corpus/*.hpp
+          clang-format --dry-run --Werror include/sseq/*.hpp include/sseq/*.h src/*.cpp src/*.hpp tools/*.cpp \
+            tests/*.cpp tests/*.c tests/*.hpp tests/corpus/*.cpp tests/corpus/*.hpp swift/include/*.h
       - name: Configure with compile commands
         run: cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
         env:

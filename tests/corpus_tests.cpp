@@ -1,16 +1,16 @@
 // Corpus tests: compare libsseq against the files Cakewalk Apprentice 1.04 saved for the
-// corpus songs (tests/data, see tests/data/README.md).
+// corpus sequences (tests/data, see tests/data/README.md).
 //
 //   sseq_corpus_tests <tests/data dir>
 //
-// For every song in tests/corpus/songs.cpp:
+// For every sequence in tests/corpus/sequences.cpp:
 //   src/NAME.WRK      written by libsseq (gencorpus); must equal what the library writes now
-//   app/NAME.WRK      the same song after Apprentice loaded and saved it: byte-identical round
-//                     trip, idempotent normalization, and the model must match the song
-//   app/NAME.MID      Apprentice's MIDI export of it: our export must have the same content
-//   mid2wrk/NAME.WRK  Apprentice's import of that MIDI file: our import must match its model
+//   app/NAME.WRK      the same sequence after Cakewalk loaded and saved it: byte-identical round
+//                     trip, idempotent normalization, and the model must match the sequence
+//   app/NAME.MID      Cakewalk's MIDI export of it: our export must have the same content
+//   mid2wrk/NAME.WRK  Cakewalk's import of that MIDI file: our import must match its model
 #include "check.hpp"
-#include "corpus/songs.hpp"
+#include "corpus/sequences.hpp"
 #include "sseq/sseq.hpp"
 
 #include <algorithm>
@@ -42,7 +42,7 @@ long firstDifference(const std::vector<std::uint8_t>& a, const std::vector<std::
     return static_cast<long>(ia - a.begin());
 }
 
-// Canonical form of an SMF: per track, the list of (time, bytes) with events at the same tick
+// Canonical form of an SMF: per stream, the list of (time, bytes) with events at the same tick
 // sorted by their bytes, so that the order of simultaneous events does not matter.
 using CanonicalEvent = std::pair<Tick, std::vector<std::uint8_t>>;
 
@@ -115,7 +115,7 @@ std::vector<std::vector<CanonicalEvent>> canonicalSmf(const std::vector<std::uin
     return out;
 }
 
-/// Apprentice stores a Wave payload in a 32-byte-granular block and saves the whole block.
+/// Cakewalk stores a Wave payload in a 32-byte-granular block and saves the whole block.
 std::vector<std::uint8_t> padWave(std::vector<std::uint8_t> p) {
     p.resize((p.size() + 31) / 32 * 32, 0);
     return p;
@@ -129,7 +129,7 @@ bool sameEvent(const Event& x, const Event& y) {
            x.duration == y.duration && samePayload;
 }
 
-/// Events of a track in canonical order: by time, then by a total order on the fields, so that
+/// Events of a stream in canonical order: by time, then by a total order on the fields, so that
 /// the order of simultaneous events does not matter.
 std::vector<Event> canonicalEvents(std::vector<Event> ev) {
     std::ranges::stable_sort(ev, [](const Event& a, const Event& b) {
@@ -139,17 +139,17 @@ std::vector<Event> canonicalEvents(std::vector<Event> ev) {
     return ev;
 }
 
-bool sameEvents(const Track& a, const Track& b, const std::string& what) {
+bool sameEvents(const Stream& a, const Stream& b, const std::string& what) {
     const std::vector<Event> ea = canonicalEvents(a.events);
     const std::vector<Event> eb = canonicalEvents(b.events);
     if (ea.size() != eb.size()) {
-        std::printf("FAIL %s: track %d has %zu events, expected %zu\n", what.c_str(), a.number + 1, ea.size(),
+        std::printf("FAIL %s: stream %d has %zu events, expected %zu\n", what.c_str(), a.number + 1, ea.size(),
                     eb.size());
         return false;
     }
     for (std::size_t i = 0; i < ea.size(); ++i) {
         if (!sameEvent(ea[i], eb[i])) {
-            std::printf("FAIL %s: track %d event %zu differs (t=%lld kind=%d d1=%d d2=%d dur=%lld vs t=%lld kind=%d "
+            std::printf("FAIL %s: stream %d event %zu differs (t=%lld kind=%d d1=%d d2=%d dur=%lld vs t=%lld kind=%d "
                         "d1=%d d2=%d dur=%lld)\n",
                         what.c_str(), a.number + 1, i, static_cast<long long>(ea[i].time), static_cast<int>(ea[i].kind),
                         ea[i].data1, ea[i].data2, static_cast<long long>(ea[i].duration),
@@ -179,14 +179,14 @@ std::string opt(const std::optional<std::uint8_t>& v) {
     return v ? std::to_string(*v) : "none";
 }
 
-/// Compares the song Apprentice saved (`got`) with the song it was given (`want`).
-void compareWithSource(const std::string& what, const Song& got, const Song& want, const bool fromApprentice) {
+/// Compares the sequence Cakewalk saved (`got`) with the sequence it was given (`want`).
+void compareWithSource(const std::string& what, const Sequence& got, const Sequence& want, const bool fromCakewalk) {
     CHECK_FIELD(what, got, want, ppq);
-    CHECK_FIELD(what, got, want, tracks.size());
-    for (std::size_t i = 0; i < std::min(got.tracks.size(), want.tracks.size()); ++i) {
-        const Track& g = got.tracks[i];
-        const Track& w = want.tracks[i];
-        const std::string where = what + " track " + std::to_string(w.number + 1);
+    CHECK_FIELD(what, got, want, streams.size());
+    for (std::size_t i = 0; i < std::min(got.streams.size(), want.streams.size()); ++i) {
+        const Stream& g = got.streams[i];
+        const Stream& w = want.streams[i];
+        const std::string where = what + " stream " + std::to_string(w.number + 1);
         CHECK_FIELD(where, g, w, number);
         CHECK_FIELD(where, g, w, name);
         CHECK_FIELD(where, g, w, port);
@@ -228,8 +228,8 @@ void compareWithSource(const std::string& what, const Song& got, const Song& wan
     }
     CHECK_FIELD(what, got, want, markers.size());
     for (std::size_t i = 0; i < std::min(got.markers.size(), want.markers.size()); ++i) {
-        if (fromApprentice && want.markers[i].smpteLocked) {
-            // Apprentice converts a locked marker to whole frames and back, so its tick moves to
+        if (fromCakewalk && want.markers[i].smpteLocked) {
+            // Cakewalk converts a locked marker to whole frames and back, so its tick moves to
             // the nearest frame boundary.
             const TempoMap& tm = want.tempoMap;
             const Timecode& tc = want.timecode;
@@ -266,7 +266,7 @@ void compareWithSource(const std::string& what, const Song& got, const Song& wan
         CHECK_FIELD(what, got.sysxBanks[i], want.sysxBanks[i], name);
         CHECK_FIELD(what, got.sysxBanks[i], want.sysxBanks[i], data);
     }
-    // VARS: the known flags; Apprentice rewrites some other bytes (Now, end-all time, ...).
+    // VARS: the known flags; Cakewalk rewrites some other bytes (Now, end-all time, ...).
     CHECK_FIELD(what, got, want, vars.zeroControllers());
     CHECK_FIELD(what, got, want, vars.sendSpp());
     CHECK_FIELD(what, got, want, vars.useContinue());
@@ -290,9 +290,9 @@ int main(int argc, char** argv) {
     const fs::path src = data / "src";
     const fs::path app = data / "app";
     const fs::path mid2wrk = data / "mid2wrk";
-    int songs = 0;
+    int sequences = 0;
 
-    for (const corpus::CorpusSong& c : corpus::allSongs()) {
+    for (const corpus::CorpusSequence& c : corpus::allSequences()) {
         const std::string name = c.name;
         const fs::path srcFile = src / (name + ".WRK");
         const fs::path appFile = app / (name + ".WRK");
@@ -302,68 +302,68 @@ int main(int argc, char** argv) {
             std::printf("skip %s: no source file\n", name.c_str());
             continue;
         }
-        ++songs;
+        ++sequences;
 
         // 1. The generator output is reproducible.
         ++test::checks;
-        if (wrk::write(c.song, wrk::WriteMode::Normalize) != slurp(srcFile)) {
+        if (wrk::write(c.sequence, wrk::WriteMode::Normalize) != slurp(srcFile)) {
             ++test::failures;
             std::printf("FAIL %s: src file differs from what the library writes now (regenerate with gencorpus)\n",
                         name.c_str());
         }
-        // The source file reads back as the song it was written from.
-        compareWithSource(name + " (src)", wrk::readFile(srcFile.string()), c.song, false);
+        // The source file reads back as the sequence it was written from.
+        compareWithSource(name + " (src)", wrk::readFile(srcFile.string()), c.sequence, false);
 
         if (!fs::exists(appFile)) {
-            std::printf("ok   %s (source only; no Apprentice files)\n", name.c_str());
+            std::printf("ok   %s (source only; no Cakewalk files)\n", name.c_str());
             continue;
         }
 
-        // 2. Apprentice's save of the song: byte-identical round trip, idempotent normalization,
-        //    and the same model as the source song.
+        // 2. Cakewalk's save of the sequence: byte-identical round trip, idempotent normalization,
+        //    and the same model as the source sequence.
         const std::vector<std::uint8_t> appBytes = slurp(appFile);
-        Song appSong;
+        Sequence appSequence;
         try {
-            appSong = wrk::read(appBytes);
+            appSequence = wrk::read(appBytes);
         } catch (const Error& e) {
             ++test::checks;
             ++test::failures;
             std::printf("FAIL %s: cannot read app file: %s\n", name.c_str(), e.what());
             continue;
         }
-        const long d = firstDifference(appBytes, wrk::write(appSong, wrk::WriteMode::Preserve));
+        const long d = firstDifference(appBytes, wrk::write(appSequence, wrk::WriteMode::Preserve));
         ++test::checks;
         if (d >= 0) {
             ++test::failures;
             std::printf("FAIL %s: round trip of app file differs at byte %ld\n", name.c_str(), d);
         }
-        const std::vector<std::uint8_t> n1 = wrk::write(appSong, wrk::WriteMode::Normalize);
+        const std::vector<std::uint8_t> n1 = wrk::write(appSequence, wrk::WriteMode::Normalize);
         ++test::checks;
         if (wrk::write(wrk::read(n1), wrk::WriteMode::Normalize) != n1) {
             ++test::failures;
             std::printf("FAIL %s: normalize is not idempotent\n", name.c_str());
         }
-        compareWithSource(name + " (app)", appSong, c.song, true);
+        compareWithSource(name + " (app)", appSequence, c.sequence, true);
 
-        // 3. Apprentice's MIDI export has the same content as ours.
+        // 3. Cakewalk's MIDI export has the same content as ours.
         if (fs::exists(midFile)) {
             ++test::checks;
-            if (canonicalSmf(smf::write(appSong)) != canonicalSmf(slurp(midFile))) {
+            if (canonicalSmf(smf::write(appSequence)) != canonicalSmf(slurp(midFile))) {
                 ++test::failures;
-                std::printf("FAIL %s: SMF export differs from Apprentice's\n", name.c_str());
+                std::printf("FAIL %s: SMF export differs from Cakewalk's\n", name.c_str());
             }
         }
 
-        // 4. Our import of Apprentice's MIDI file equals Apprentice's own import of it.
+        // 4. Our import of Cakewalk's MIDI file equals Cakewalk's own import of it.
         if (fs::exists(midFile) && fs::exists(importFile)) {
-            const Song ours = smf::readFile(midFile.string());
-            const Song theirs = wrk::readFile(importFile.string());
+            const Sequence ours = smf::readFile(midFile.string());
+            const Sequence theirs = wrk::readFile(importFile.string());
             const std::string what = name + " (mid2wrk)";
-            CHECK_FIELD(what, ours, theirs, tracks.size());
-            for (std::size_t i = 0; i < std::min(ours.tracks.size(), theirs.tracks.size()); ++i) {
-                const Track& a = ours.tracks[i];
-                const Track& b = theirs.tracks[i];
-                const std::string where = what + " track " + std::to_string(b.number + 1);
+            CHECK_FIELD(what, ours, theirs, streams.size());
+            for (std::size_t i = 0; i < std::min(ours.streams.size(), theirs.streams.size()); ++i) {
+                const Stream& a = ours.streams[i];
+                const Stream& b = theirs.streams[i];
+                const std::string where = what + " stream " + std::to_string(b.number + 1);
                 CHECK_FIELD(where, a, b, number);
                 CHECK_FIELD(where, a, b, name);
                 CHECK_FIELD(where, a, b, port);
@@ -386,10 +386,10 @@ int main(int argc, char** argv) {
             CHECK_FIELD(what, ours, theirs, meterMap.entries.size());
             CHECK_FIELD(what, ours, theirs, keyMap.size());
         }
-        std::printf("ok   %s (%zu bytes, %zu tracks%s%s)\n", name.c_str(), appBytes.size(), appSong.tracks.size(),
+        std::printf("ok   %s (%zu bytes, %zu streams%s%s)\n", name.c_str(), appBytes.size(), appSequence.streams.size(),
                     fs::exists(midFile) ? ", mid" : "", fs::exists(importFile) ? ", mid2wrk" : "");
     }
-    if (songs == 0) {
+    if (sequences == 0) {
         std::printf("no corpus files under %s\n", data.string().c_str());
     }
     return test::report("corpus tests");

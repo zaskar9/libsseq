@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(libsseq VERSION 0.2.0 LANGUAGES CXX)
+project(libsseq VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,6 +13,8 @@ add_library(sseq
     src/wrk.cpp
     src/smf.cpp
     src/engine.cpp
+    src/recorder.cpp
+    src/capi.cpp
 )
 target_include_directories(sseq PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -35,13 +37,20 @@ if(SSEQ_BUILD_TESTS)
     target_compile_options(sseq_unit_tests PRIVATE ${SSEQ_WARNINGS})
     add_test(NAME unit COMMAND sseq_unit_tests)
 
+    # Compiled as C: the header must stay usable from C (and from Swift through it).
+    add_executable(sseq_capi_tests tests/capi_tests.c)
+    target_link_libraries(sseq_capi_tests PRIVATE sseq)
+    set_target_properties(sseq_capi_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_compile_options(sseq_capi_tests PRIVATE $<$<C_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion>)
+    add_test(NAME capi COMMAND sseq_capi_tests "${CMAKE_CURRENT_BINARY_DIR}")
+
     add_executable(sseq_engine_tests tests/engine_tests.cpp)
     target_link_libraries(sseq_engine_tests PRIVATE sseq_corpus)
     target_compile_options(sseq_engine_tests PRIVATE ${SSEQ_WARNINGS})
     add_test(NAME engine COMMAND sseq_engine_tests)
 
-    # The corpus: song definitions shared by the generator and the corpus test.
-    add_library(sseq_corpus STATIC tests/corpus/songs.cpp)
+    # The corpus: sequence definitions shared by the generator and the corpus test.
+    add_library(sseq_corpus STATIC tests/corpus/sequences.cpp)
     target_link_libraries(sseq_corpus PUBLIC sseq)
     target_include_directories(sseq_corpus PUBLIC tests)
     target_compile_options(sseq_corpus PRIVATE ${SSEQ_WARNINGS})

@@ -15,8 +15,8 @@
 
 namespace sseq::wrk {
 
-using detail::Reader;
-using detail::Writer;
+using bytes::Reader;
+using bytes::Writer;
 
 namespace {
 
@@ -172,7 +172,7 @@ Event readMidiEvent(Reader& r, const Tick time, const std::uint8_t status, const
     return e;
 }
 
-void readFixedStream(Reader& r, Track& t) {
+void readFixedStream(Reader& r, Stream& t) {
     const int count = r.u16();
     t.events.reserve(t.events.size() + static_cast<std::size_t>(count));
     for (int i = 0; i < count; ++i) {
@@ -185,7 +185,7 @@ void readFixedStream(Reader& r, Track& t) {
     }
 }
 
-void readVarStream(Reader& r, Track& t, const Song& song) {
+void readVarStream(Reader& r, Stream& t, const Sequence& sequence) {
     const std::uint32_t count = r.u32();
     for (std::uint32_t i = 0; i < count; ++i) {
         const Tick time = r.u24();
@@ -208,7 +208,7 @@ void readVarStream(Reader& r, Track& t, const Song& song) {
             break;
         default: {
             const bool known =
-                std::ranges::any_of(song.strTab, [status](const StrTabEntry& s) { return s.code == status; });
+                std::ranges::any_of(sequence.strTab, [status](const StrTabEntry& s) { return s.code == status; });
             throw Error(std::string(known ? "unsupported" : "unknown") + " string event code " +
                         std::to_string(status));
         }
@@ -221,16 +221,16 @@ void readVarStream(Reader& r, Track& t, const Song& song) {
 
 } // namespace
 
-Song read(const std::vector<std::uint8_t>& bytes) {
+Sequence read(const std::vector<std::uint8_t>& bytes) {
     Reader r(bytes);
     if (r.remaining() < kHeaderSize || r.str(kMagic.size()) != kMagic) {
         throw Error("not a Cakewalk .WRK file");
     }
     r.skip(1); // 0x1A
-    Song song;
-    song.versionMinor = r.u8();
-    song.versionMajor = r.u8();
-    song.layout.clear();
+    Sequence sequence;
+    sequence.versionMinor = r.u8();
+    sequence.versionMajor = r.u8();
+    sequence.layout.clear();
     bool haveTempo = false;
     bool haveMeter = false;
     bool haveKey = false;
@@ -250,35 +250,35 @@ Song read(const std::vector<std::uint8_t>& bytes) {
 
         switch (type) {
         case TIMEBASE:
-            song.ppq = c.u16();
-            song.syncPpq();
+            sequence.ppq = c.u16();
+            sequence.syncPpq();
             break;
         case VARS:
             if (len != Vars::kSize) {
-                le.index = static_cast<int>(song.unknownChunks.size());
-                song.unknownChunks.push_back({type, c.bytes(len)});
+                le.index = static_cast<int>(sequence.unknownChunks.size());
+                sequence.unknownChunks.push_back({type, c.bytes(len)});
                 break;
             }
-            c.array(song.vars.raw);
+            c.array(sequence.vars.raw);
             break;
         case STRTAB: {
-            song.strTab.clear();
+            sequence.strTab.clear();
             const int n = c.u16();
             for (int i = 0; i < n; ++i) {
                 StrTabEntry s;
                 s.name = c.pstr();
                 s.code = c.u8();
-                song.strTab.push_back(std::move(s));
+                sequence.strTab.push_back(std::move(s));
             }
             break;
         }
         case TEMPO:
         case NTEMPO: {
             if (!haveTempo) {
-                song.tempoMap.entries.clear();
+                sequence.tempoMap.entries.clear();
                 haveTempo = true;
             }
-            song.legacyTempoChunk = (type == TEMPO);
+            sequence.legacyTempoChunk = (type == TEMPO);
             const int n = c.u16();
             for (int i = 0; i < n; ++i) {
                 TempoEntry e;
@@ -287,13 +287,13 @@ Song read(const std::vector<std::uint8_t>& bytes) {
                 const int raw = c.u16();
                 e.bpm100 = type == TEMPO ? raw * 100 : raw;
                 c.array(e.reserved2);
-                song.tempoMap.entries.push_back(e);
+                sequence.tempoMap.entries.push_back(e);
             }
             break;
         }
         case METER: {
             if (!haveMeter) {
-                song.meterMap.entries.clear();
+                sequence.meterMap.entries.clear();
                 haveMeter = true;
             }
             const int n = c.u16();
@@ -304,13 +304,13 @@ Song read(const std::vector<std::uint8_t>& bytes) {
                 m.numerator = c.u8();
                 m.denominatorLog2 = c.u8();
                 c.array(m.reserved2);
-                song.meterMap.entries.push_back(m);
+                sequence.meterMap.entries.push_back(m);
             }
             break;
         }
         case METERKEY: {
             if (!haveKey) {
-                song.keyMap.clear();
+                sequence.keyMap.clear();
                 haveKey = true;
             }
             // One record per measure where the meter or the key changes; the key map keeps
@@ -321,21 +321,21 @@ Song read(const std::vector<std::uint8_t>& bytes) {
                 k.measure = c.u16();
                 c.skip(2); // numerator and denominator, duplicated from the meter map
                 k.alterations = c.s8();
-                if (song.keyMap.empty() || song.keyMap.back().alterations != k.alterations) {
-                    song.keyMap.push_back(k);
+                if (sequence.keyMap.empty() || sequence.keyMap.back().alterations != k.alterations) {
+                    sequence.keyMap.push_back(k);
                 }
             }
-            if (song.keyMap.empty()) {
-                song.keyMap.push_back(KeyEntry{});
+            if (sequence.keyMap.empty()) {
+                sequence.keyMap.push_back(KeyEntry{});
             }
             break;
         }
         case TIMEFMT:
-            song.timecode.rate = static_cast<FrameRate>(c.u16());
-            song.timecode.offsetFrames = c.u32();
+            sequence.timecode.rate = static_cast<FrameRate>(c.u16());
+            sequence.timecode.offsetFrames = c.u32();
             break;
         case METRONOME: {
-            Metronome& m = song.metronome;
+            Metronome& m = sequence.metronome;
             m.port = c.u16();
             m.channel = c.u16();
             m.key = c.u16();
@@ -346,7 +346,7 @@ Song read(const std::vector<std::uint8_t>& bytes) {
             break;
         }
         case THRU: {
-            Thru& t = song.thru;
+            Thru& t = sequence.thru;
             t.mode = c.u8();
             t.reserved1 = c.u8();
             t.port = c.u8();
@@ -357,7 +357,7 @@ Song read(const std::vector<std::uint8_t>& bytes) {
             break;
         }
         case MARKERS: {
-            song.markers.clear();
+            sequence.markers.clear();
             const std::uint32_t n = c.u32();
             for (std::uint32_t i = 0; i < n; ++i) {
                 Marker m;
@@ -366,13 +366,13 @@ Song read(const std::vector<std::uint8_t>& bytes) {
                 m.time = c.u24();
                 c.array(m.reserved1);
                 m.name = c.pstr();
-                song.markers.push_back(std::move(m));
+                sequence.markers.push_back(std::move(m));
             }
             break;
         }
         case TRACK: {
             const int num = c.u16();
-            Track& t = song.track(num);
+            Stream& t = sequence.stream(num);
             le.index = num;
             // Two 15-character fields: the first 15 characters and the next 15. TRKNAME, when
             // present, carries the full name and overrides this.
@@ -392,43 +392,43 @@ Song read(const std::vector<std::uint8_t>& bytes) {
         case TRKNAME: {
             const int num = c.u16();
             le.index = num;
-            song.track(num).name = c.pstr();
+            sequence.stream(num).name = c.pstr();
             break;
         }
         case STREAM: {
             const int num = c.u16();
             le.index = num;
-            readFixedStream(c, song.track(num));
+            readFixedStream(c, sequence.stream(num));
             break;
         }
         case STRSTREAM: {
             const int num = c.u16();
             le.index = num;
-            readVarStream(c, song.track(num), song);
+            readVarStream(c, sequence.stream(num), sequence);
             break;
         }
         case TRKPATCH: {
             const int num = c.u16();
             le.index = num;
-            song.track(num).patch = c.u16();
+            sequence.stream(num).patch = c.u16();
             break;
         }
         case TRKREPS: {
             const int num = c.u16();
             le.index = num;
-            song.track(num).reps = c.u16();
+            sequence.stream(num).reps = c.u16();
             break;
         }
         case TRKOFFS: {
             const int num = c.u16();
             le.index = num;
-            song.track(num).timePlus = c.s16();
+            sequence.stream(num).timePlus = c.s16();
             break;
         }
         case TRKVOL: {
             const int num = c.u16();
             le.index = num;
-            Track& t = song.track(num);
+            Stream& t = sequence.stream(num);
             const int volume = c.s16(); // -1 = none (the value the UI uses for "none")
             const int pan = c.s16();
             t.volume = volume < 0 ? std::nullopt : std::optional<int>(volume);
@@ -437,7 +437,7 @@ Song read(const std::vector<std::uint8_t>& bytes) {
         }
         case COMMENTS: {
             const std::size_t n = c.u16();
-            song.comments = c.bytes(n);
+            sequence.comments = c.bytes(n);
             break;
         }
         case SYSEX: {
@@ -447,25 +447,25 @@ Song read(const std::vector<std::uint8_t>& bytes) {
             b.autoSend = c.u8() != 0;
             b.name = c.pstr();
             b.data = c.bytes(n);
-            le.index = static_cast<int>(song.sysxBanks.size());
-            song.sysxBanks.push_back(std::move(b));
+            le.index = static_cast<int>(sequence.sysxBanks.size());
+            sequence.sysxBanks.push_back(std::move(b));
             break;
         }
         default:
-            le.index = static_cast<int>(song.unknownChunks.size());
-            song.unknownChunks.push_back({type, c.bytes(len)});
+            le.index = static_cast<int>(sequence.unknownChunks.size());
+            sequence.unknownChunks.push_back({type, c.bytes(len)});
             break;
         }
-        song.layout.push_back(le);
+        sequence.layout.push_back(le);
     }
-    for (Track& t : song.tracks) {
+    for (Stream& t : sequence.streams) {
         sortEvents(t.events);
     }
-    return song;
+    return sequence;
 }
 
-Song readFile(const std::string& path) {
-    return read(detail::readFileBytes(path));
+Sequence readFile(const std::string& path) {
+    return read(bytes::readFileBytes(path));
 }
 
 // ---------------------------------------------------------------- writing
@@ -479,7 +479,7 @@ public:
         w_.u8(type);
         w_.u32(0);
     }
-    ~ChunkWriter() { w_.patchU32(lenPos_, detail::u32(w_.size() - lenPos_ - 4)); }
+    ~ChunkWriter() { w_.patchU32(lenPos_, bytes::u32(w_.size() - lenPos_ - 4)); }
     ChunkWriter(const ChunkWriter&) = delete;
     ChunkWriter(ChunkWriter&&) = delete;
     ChunkWriter& operator=(const ChunkWriter&) = delete;
@@ -510,31 +510,31 @@ void writeMidiEventBody(Writer& w, const Event& e, const bool fixed) {
     switch (e.kind) {
     case EventKind::Note:
         status = 0x90;
-        d1 = detail::u8(e.data1);
-        d2 = detail::u8(e.data2);
-        dur = detail::u16(e.duration);
+        d1 = bytes::u8(e.data1);
+        d2 = bytes::u8(e.data2);
+        dur = bytes::u16(e.duration);
         break;
     case EventKind::KeyAftertouch:
     case EventKind::Controller:
         status = e.kind == EventKind::KeyAftertouch ? 0xa0 : 0xb0;
-        d1 = detail::u8(e.data1);
-        d2 = detail::u8(e.data2);
+        d1 = bytes::u8(e.data1);
+        d2 = bytes::u8(e.data2);
         break;
     case EventKind::Patch:
     case EventKind::ChannelAftertouch:
         status = e.kind == EventKind::Patch ? 0xc0 : 0xd0;
-        d1 = detail::u8(e.data1);
+        d1 = bytes::u8(e.data1);
         break;
     case EventKind::PitchWheel: {
         const int v = e.data1 + 8192;
         status = 0xe0;
-        d1 = detail::u8(v & 0x7f);
-        d2 = detail::u8((v >> 7) & 0x7f);
+        d1 = bytes::u8(v & 0x7f);
+        d2 = bytes::u8((v >> 7) & 0x7f);
         break;
     }
     case EventKind::Sysex:
         status = 0xf0;
-        d1 = detail::u8(e.data1);
+        d1 = bytes::u8(e.data1);
         break;
     default:
         throw Error("not a MIDI event");
@@ -564,9 +564,9 @@ void writeMidiEventBody(Writer& w, const Event& e, const bool fixed) {
     }
 }
 
-void writeTrackChunk(Writer& w, const Track& t) {
+void writeTrackChunk(Writer& w, const Stream& t) {
     const ChunkWriter c(w, TRACK);
-    w.u16(detail::u16(t.number));
+    w.u16(bytes::u16(t.number));
     w.pstr(t.name.substr(0, 15));
     w.pstr(t.name.size() > 15 ? t.name.substr(15, 15) : std::string());
     w.u8(t.channel ? *t.channel : 255U);
@@ -576,50 +576,50 @@ void writeTrackChunk(Writer& w, const Track& t) {
     w.u8((t.selected ? 1U : 0U) | (t.muted ? 2U : 0U) | (t.loop ? 4U : 0U));
 }
 
-void writeStream(Writer& w, const Track& track) {
-    Track t = track; // events are written in time order
+void writeStream(Writer& w, const Stream& stream) {
+    Stream t = stream; // events are written in time order
     sortEvents(t.events);
     if (t.hasStringEvents()) {
         const ChunkWriter c(w, STRSTREAM);
-        w.u16(detail::u16(t.number));
-        w.u32(detail::u32(t.events.size()));
+        w.u16(bytes::u16(t.number));
+        w.u32(bytes::u32(t.events.size()));
         for (const Event& e : t.events) {
-            w.u24(detail::u32(e.time));
+            w.u24(bytes::u32(e.time));
             if (e.isMidi()) {
                 writeMidiEventBody(w, e, false);
                 continue;
             }
             w.u8(strCode(e.kind));
-            w.u32(detail::u32(e.payload.size()));
+            w.u32(bytes::u32(e.payload.size()));
             w.bytes(e.payload);
         }
     } else {
         const ChunkWriter c(w, STREAM);
-        w.u16(detail::u16(t.number));
-        w.u16(detail::u16(t.events.size()));
+        w.u16(bytes::u16(t.number));
+        w.u16(bytes::u16(t.events.size()));
         for (const Event& e : t.events) {
-            w.u24(detail::u32(e.time));
+            w.u24(bytes::u32(e.time));
             writeMidiEventBody(w, e, true);
         }
     }
 }
 
-void writeChunk(Writer& w, const Song& song, const std::uint8_t type, const int index) {
+void writeChunk(Writer& w, const Sequence& sequence, const std::uint8_t type, const int index) {
     switch (type) {
     case TIMEBASE: {
         const ChunkWriter c(w, type);
-        w.u16(detail::u16(song.ppq));
+        w.u16(bytes::u16(sequence.ppq));
         break;
     }
     case VARS: {
         const ChunkWriter c(w, type);
-        w.array(song.vars.raw);
+        w.array(sequence.vars.raw);
         break;
     }
     case STRTAB: {
         const ChunkWriter c(w, type);
-        w.u16(detail::u16(song.strTab.size()));
-        for (const StrTabEntry& s : song.strTab) {
+        w.u16(bytes::u16(sequence.strTab.size()));
+        for (const StrTabEntry& s : sequence.strTab) {
             w.pstr(s.name);
             w.u8(s.code);
         }
@@ -628,23 +628,23 @@ void writeChunk(Writer& w, const Song& song, const std::uint8_t type, const int 
     case TEMPO:
     case NTEMPO: {
         const ChunkWriter c(w, type);
-        w.u16(detail::u16(song.tempoMap.entries.size()));
-        for (const TempoEntry& e : song.tempoMap.entries) {
-            w.u32(detail::u32(e.time));
+        w.u16(bytes::u16(sequence.tempoMap.entries.size()));
+        for (const TempoEntry& e : sequence.tempoMap.entries) {
+            w.u32(bytes::u32(e.time));
             w.array(e.reserved1);
-            w.u16(detail::u16(type == TEMPO ? e.bpm100 / 100 : e.bpm100));
+            w.u16(bytes::u16(type == TEMPO ? e.bpm100 / 100 : e.bpm100));
             w.array(e.reserved2);
         }
         break;
     }
     case METER: {
         const ChunkWriter c(w, type);
-        w.u16(detail::u16(song.meterMap.entries.size()));
-        for (const MeterEntry& m : song.meterMap.entries) {
+        w.u16(bytes::u16(sequence.meterMap.entries.size()));
+        for (const MeterEntry& m : sequence.meterMap.entries) {
             w.array(m.reserved1);
-            w.u16(detail::u16(m.measure));
-            w.u8(detail::u8(m.numerator));
-            w.u8(detail::u8(m.denominatorLog2));
+            w.u16(bytes::u16(m.measure));
+            w.u8(bytes::u8(m.numerator));
+            w.u8(bytes::u8(m.denominatorLog2));
             w.array(m.reserved2);
         }
         break;
@@ -652,57 +652,57 @@ void writeChunk(Writer& w, const Song& song, const std::uint8_t type, const int 
     case METERKEY: {
         // One record per measure where the meter or the key changes.
         std::vector<int> measures;
-        measures.reserve(song.meterMap.entries.size() + song.keyMap.size());
-        for (const MeterEntry& m : song.meterMap.entries) {
+        measures.reserve(sequence.meterMap.entries.size() + sequence.keyMap.size());
+        for (const MeterEntry& m : sequence.meterMap.entries) {
             measures.push_back(m.measure);
         }
-        for (const KeyEntry& k : song.keyMap) {
+        for (const KeyEntry& k : sequence.keyMap) {
             measures.push_back(k.measure);
         }
         std::ranges::sort(measures);
         const auto [first, last] = std::ranges::unique(measures);
         measures.erase(first, last);
         const ChunkWriter c(w, type);
-        w.u16(detail::u16(measures.size()));
+        w.u16(bytes::u16(measures.size()));
         for (const int measure : measures) {
-            const MeterEntry& m = song.meterMap.atMeasure(measure);
-            int alterations = song.keyMap.front().alterations;
-            for (const KeyEntry& k : song.keyMap) {
+            const MeterEntry& m = sequence.meterMap.atMeasure(measure);
+            int alterations = sequence.keyMap.front().alterations;
+            for (const KeyEntry& k : sequence.keyMap) {
                 if (k.measure <= measure) {
                     alterations = k.alterations;
                 }
             }
-            w.u16(detail::u16(measure));
-            w.u8(detail::u8(m.numerator));
-            w.u8(detail::u8(m.denominatorLog2));
+            w.u16(bytes::u16(measure));
+            w.u8(bytes::u8(m.numerator));
+            w.u8(bytes::u8(m.denominatorLog2));
             w.s8(alterations);
         }
         break;
     }
     case TIMEFMT: {
         const ChunkWriter c(w, type);
-        w.u16(static_cast<std::uint16_t>(song.timecode.rate));
-        w.u32(detail::u32(song.timecode.offsetFrames));
+        w.u16(static_cast<std::uint16_t>(sequence.timecode.rate));
+        w.u32(bytes::u32(sequence.timecode.offsetFrames));
         break;
     }
     case METRONOME: {
         const ChunkWriter c(w, type);
-        const Metronome& m = song.metronome;
-        w.u16(detail::u16(m.port));
-        w.u16(detail::u16(m.channel));
-        w.u16(detail::u16(m.key));
-        w.u16(detail::u16(m.velocity));
-        w.u16(detail::u16(m.duration));
+        const Metronome& m = sequence.metronome;
+        w.u16(bytes::u16(m.port));
+        w.u16(bytes::u16(m.channel));
+        w.u16(bytes::u16(m.key));
+        w.u16(bytes::u16(m.velocity));
+        w.u16(bytes::u16(m.duration));
         w.u16(m.reserved[0]);
         w.u16(m.reserved[1]);
         break;
     }
     case THRU: {
         const ChunkWriter c(w, type);
-        const Thru& t = song.thru;
-        w.u8(detail::u8(t.mode));
+        const Thru& t = sequence.thru;
+        w.u8(bytes::u8(t.mode));
         w.u8(t.reserved1);
-        w.u8(detail::u8(t.port));
+        w.u8(bytes::u8(t.port));
         w.s8(t.channel);
         w.s8(t.keyPlus);
         w.s8(t.velPlus);
@@ -711,92 +711,92 @@ void writeChunk(Writer& w, const Song& song, const std::uint8_t type, const int 
     }
     case MARKERS: {
         const ChunkWriter c(w, type);
-        w.u32(detail::u32(song.markers.size()));
-        for (const Marker& m : song.markers) {
+        w.u32(bytes::u32(sequence.markers.size()));
+        for (const Marker& m : sequence.markers) {
             w.u8(m.smpteLocked ? 1U : 0U);
             w.u8(m.reserved0);
-            w.u24(detail::u32(m.time));
+            w.u24(bytes::u32(m.time));
             w.array(m.reserved1);
             w.pstr(m.name);
         }
         break;
     }
     case COMMENTS: {
-        if (!song.comments) {
+        if (!sequence.comments) {
             break;
         }
         const ChunkWriter c(w, type);
-        w.u16(detail::u16(song.comments->size()));
-        w.bytes(*song.comments);
+        w.u16(bytes::u16(sequence.comments->size()));
+        w.bytes(*sequence.comments);
         break;
     }
     case SYSEX: {
-        const SysxBank& b = song.sysxBanks.at(static_cast<std::size_t>(index));
+        const SysxBank& b = sequence.sysxBanks.at(static_cast<std::size_t>(index));
         const ChunkWriter c(w, type);
-        w.u8(detail::u8(b.bank));
-        w.u16(detail::u16(b.data.size()));
+        w.u8(bytes::u8(b.bank));
+        w.u16(bytes::u16(b.data.size()));
         w.u8(b.autoSend ? 1U : 0U);
         w.pstr(b.name);
         w.bytes(b.data);
         break;
     }
     case TRACK:
-        writeTrackChunk(w, *song.findTrack(index));
+        writeTrackChunk(w, *sequence.findStream(index));
         break;
     case TRKNAME: {
         const ChunkWriter c(w, type);
-        const Track& t = *song.findTrack(index);
-        w.u16(detail::u16(t.number));
+        const Stream& t = *sequence.findStream(index);
+        w.u16(bytes::u16(t.number));
         w.pstr(t.name);
         break;
     }
     case STREAM:
     case STRSTREAM:
-        writeStream(w, *song.findTrack(index));
+        writeStream(w, *sequence.findStream(index));
         break;
     case TRKPATCH: {
-        const Track& t = *song.findTrack(index);
+        const Stream& t = *sequence.findStream(index);
         if (!t.patch) {
             break;
         }
         const ChunkWriter c(w, type);
-        w.u16(detail::u16(t.number));
-        w.u16(detail::u16(*t.patch));
+        w.u16(bytes::u16(t.number));
+        w.u16(bytes::u16(*t.patch));
         break;
     }
     case TRKREPS: {
-        const Track& t = *song.findTrack(index);
+        const Stream& t = *sequence.findStream(index);
         if (!t.reps) {
             break;
         }
         const ChunkWriter c(w, type);
-        w.u16(detail::u16(t.number));
-        w.u16(detail::u16(*t.reps));
+        w.u16(bytes::u16(t.number));
+        w.u16(bytes::u16(*t.reps));
         break;
     }
     case TRKOFFS: {
-        const Track& t = *song.findTrack(index);
+        const Stream& t = *sequence.findStream(index);
         if (!t.timePlus) {
             break;
         }
         const ChunkWriter c(w, type);
-        w.u16(detail::u16(t.number));
+        w.u16(bytes::u16(t.number));
         w.s16(*t.timePlus);
         break;
     }
     case TRKVOL: {
-        const Track& t = *song.findTrack(index);
+        const Stream& t = *sequence.findStream(index);
         if (!t.volume && !t.pan) {
             break;
         }
         const ChunkWriter c(w, type);
-        w.u16(detail::u16(t.number));
+        w.u16(bytes::u16(t.number));
         w.s16(t.volume.value_or(-1));
         w.s16(t.pan.value_or(-1));
         break;
     }
     default: {
-        const UnknownChunk& u = song.unknownChunks.at(static_cast<std::size_t>(index));
+        const UnknownChunk& u = sequence.unknownChunks.at(static_cast<std::size_t>(index));
         const ChunkWriter c(w, type);
         w.bytes(u.data);
         break;
@@ -804,15 +804,15 @@ void writeChunk(Writer& w, const Song& song, const std::uint8_t type, const int 
     }
 }
 
-std::vector<LayoutEntry> normalizedLayout(const Song& song) {
+std::vector<LayoutEntry> normalizedLayout(const Sequence& sequence) {
     std::vector<LayoutEntry> l;
     for (const std::uint8_t t : {TIMEBASE, VARS, STRTAB, NTEMPO, METER, METERKEY, TIMEFMT, METRONOME, THRU}) {
         l.push_back({t, -1});
     }
-    if (!song.markers.empty()) {
+    if (!sequence.markers.empty()) {
         l.push_back({MARKERS, -1});
     }
-    for (const Track& t : song.tracks) {
+    for (const Stream& t : sequence.streams) {
         l.push_back({TRACK, t.number});
         l.push_back({TRKNAME, t.number});
         if (!t.events.empty()) {
@@ -831,10 +831,10 @@ std::vector<LayoutEntry> normalizedLayout(const Song& song) {
             l.push_back({TRKVOL, t.number});
         }
     }
-    for (std::size_t i = 0; i < song.sysxBanks.size(); ++i) {
+    for (std::size_t i = 0; i < sequence.sysxBanks.size(); ++i) {
         l.push_back({SYSEX, static_cast<int>(i)});
     }
-    if (song.comments) {
+    if (sequence.comments) {
         l.push_back({COMMENTS, -1});
     }
     return l;
@@ -842,26 +842,26 @@ std::vector<LayoutEntry> normalizedLayout(const Song& song) {
 
 } // namespace
 
-std::vector<std::uint8_t> write(const Song& song, const WriteMode mode) {
+std::vector<std::uint8_t> write(const Sequence& sequence, const WriteMode mode) {
     Writer w;
     w.str(std::string(kMagic));
     w.u8(0x1a);
-    w.u8(detail::u8(song.versionMinor));
-    w.u8(detail::u8(song.versionMajor));
+    w.u8(bytes::u8(sequence.versionMinor));
+    w.u8(bytes::u8(sequence.versionMajor));
     const std::vector<LayoutEntry> layout =
-        (mode == WriteMode::Preserve && !song.layout.empty()) ? song.layout : normalizedLayout(song);
+        (mode == WriteMode::Preserve && !sequence.layout.empty()) ? sequence.layout : normalizedLayout(sequence);
     for (const LayoutEntry& le : layout) {
-        if (isTrackChunk(le.type) && song.findTrack(le.index) == nullptr) {
-            continue; // track was deleted after reading
+        if (isTrackChunk(le.type) && sequence.findStream(le.index) == nullptr) {
+            continue; // stream was deleted after reading
         }
-        writeChunk(w, song, le.type, le.index);
+        writeChunk(w, sequence, le.type, le.index);
     }
     w.u8(END);
     return std::move(w.out);
 }
 
-void writeFile(const Song& song, const std::string& path, const WriteMode mode) {
-    detail::writeFileBytes(path, write(song, mode));
+void writeFile(const Sequence& sequence, const std::string& path, const WriteMode mode) {
+    bytes::writeFileBytes(path, write(sequence, mode));
 }
 
 // ---------------------------------------------------------------- dump

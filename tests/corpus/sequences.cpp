@@ -1,5 +1,5 @@
-// Test corpus: song definitions. See songs.hpp.
-#include "songs.hpp"
+// Test corpus: sequence definitions. See sequences.hpp.
+#include "sequences.hpp"
 
 #include <array>
 #include <cctype>
@@ -69,7 +69,7 @@ Tick duration(const std::string& d, const int ppq) {
 
 } // namespace
 
-Tick addMelody(Track& track, Tick start, const std::string& notation, const std::uint8_t channel, const int velocity,
+Tick addMelody(Stream& stream, Tick start, const std::string& notation, const std::uint8_t channel, const int velocity,
                const int ppq, const double gate) {
     std::istringstream in(notation);
     std::string token;
@@ -90,10 +90,10 @@ Tick addMelody(Track& track, Tick start, const std::string& notation, const std:
         const int key = pitch(token.substr(0, split));
         const Tick len = duration(token.substr(split), ppq);
         const Tick played = std::max<Tick>(1, static_cast<Tick>(static_cast<double>(len) * gate));
-        track.events.push_back(Event::note(t, channel, key, velocity, played));
+        stream.events.push_back(Event::note(t, channel, key, velocity, played));
         t += len;
     }
-    sortEvents(track.events);
+    sortEvents(stream.events);
     return t;
 }
 
@@ -101,21 +101,21 @@ Tick addMelody(Track& track, Tick start, const std::string& notation, const std:
 
 namespace {
 
-Track& newTrack(Song& s, const int number, const std::string& name, const int channel, const int patch) {
-    Track& t = s.track(number);
+Stream& newStream(Sequence& s, const int number, const std::string& name, const int channel, const int patch) {
+    Stream& t = s.stream(number);
     t.name = name;
     t.channel = static_cast<std::uint8_t>(channel);
     t.patch = patch;
     return t;
 }
 
-void addChord(Track& t, const Tick time, std::initializer_list<int> keys, const int velocity, const Tick dur) {
+void addChord(Stream& t, const Tick time, std::initializer_list<int> keys, const int velocity, const Tick dur) {
     for (const int k : keys) {
         t.events.push_back(Event::note(time, t.channel.value_or(0), k, velocity, dur));
     }
 }
 
-void setMeter(Song& s, const int measure, const int num, const int denLog2) {
+void setMeter(Sequence& s, const int measure, const int num, const int denLog2) {
     MeterEntry m;
     m.measure = measure;
     m.numerator = num;
@@ -127,7 +127,7 @@ void setMeter(Song& s, const int measure, const int num, const int denLog2) {
     }
 }
 
-void setKey(Song& s, const int measure, const int alterations) {
+void setKey(Sequence& s, const int measure, const int alterations) {
     if (measure == 1) {
         s.keyMap = {KeyEntry{1, alterations}};
     } else {
@@ -135,7 +135,7 @@ void setKey(Song& s, const int measure, const int alterations) {
     }
 }
 
-void addMarker(Song& s, const Tick time, const std::string& name, const bool locked = false) {
+void addMarker(Sequence& s, const Tick time, const std::string& name, const bool locked = false) {
     Marker m;
     m.time = time;
     m.name = name;
@@ -151,28 +151,28 @@ std::string textOf(int n, const std::string& base) {
     return s;
 }
 
-// ---------------------------------------------------------------- synthetic songs
+// ---------------------------------------------------------------- synthetic sequences
 
-CorpusSong synMinimal() {
-    CorpusSong c{"SYN_MIN", "Minimal song: one track, one note, defaults everywhere", {}};
-    Track& t = c.song.track(0);
+CorpusSequence synMinimal() {
+    CorpusSequence c{"SYN_MIN", "Minimal sequence: one stream, one note, defaults everywhere", {}};
+    Stream& t = c.sequence.stream(0);
     t.name = "One note";
     t.events.push_back(Event::note(0, 0, 60, 100, 120));
     return c;
 }
 
-CorpusSong synKinds() {
-    CorpusSong c{"SYN_KIND",
-                 "Every event kind: note, key and channel aftertouch, controller, patch, wheel, sysex, MCI, text",
-                 {}};
-    Song& s = c.song;
+CorpusSequence synKinds() {
+    CorpusSequence c{"SYN_KIND",
+                     "Every event kind: note, key and channel aftertouch, controller, patch, wheel, sysex, MCI, text",
+                     {}};
+    Sequence& s = c.sequence;
     SysxBank bank;
     bank.bank = 0;
     bank.name = "GM reset";
     bank.autoSend = false;
     bank.data = {0xf0, 0x7e, 0x7f, 0x09, 0x01, 0xf7};
     s.sysxBanks.push_back(bank);
-    Track& t = newTrack(s, 0, "All kinds", 2, 5);
+    Stream& t = newStream(s, 0, "All kinds", 2, 5);
     t.events.push_back(Event::textEvent(0, "text at start"));
     t.events.push_back(Event::mciCommand(0, "play c:\\sounds\\hello.wav"));
     t.events.push_back(Event::sysex(0, 0));
@@ -190,18 +190,18 @@ CorpusSong synKinds() {
     t.events.push_back(Event::controller(360, 2, 64, 0));
     t.events.push_back(Event::textEvent(480, "text at the end"));
     sortEvents(t.events);
-    // A second track with plain MIDI only, so the file has both stream chunk kinds.
-    Track& u = newTrack(s, 1, "MIDI only", 3, 48);
+    // A second stream with plain MIDI only, so the file has both stream chunk kinds.
+    Stream& u = newStream(s, 1, "MIDI only", 3, 48);
     u.events.push_back(Event::note(0, 3, 48, 100, 480));
     u.events.push_back(Event::controller(240, 3, 11, 90));
     return c;
 }
 
-CorpusSong synParams() {
-    CorpusSong c{"SYN_PARM",
-                 "Track parameters: sparse numbers, channel none, Key+/Vel+/Time+, loop, mute, patch, volume, pan",
-                 {}};
-    Song& s = c.song;
+CorpusSequence synParams() {
+    CorpusSequence c{"SYN_PARM",
+                     "Stream parameters: sparse numbers, channel none, Key+/Vel+/Time+, loop, mute, patch, volume, pan",
+                     {}};
+    Sequence& s = c.sequence;
     struct P {
         int number;
         const char* name;
@@ -220,11 +220,12 @@ CorpusSong synParams() {
         {7, "Key-12 Vel-20 muted", 4, -12, -20, 1, true, false, 0, 0, 64, 100, 64},
         {15, "Loop 4 Time+240", 5, 0, 0, 1, false, false, 4, 240, 33, 90, 32},
         {31, "Time-120 volume only", 6, 0, 0, 0, false, false, 0, -120, -1, 80, -1},
-        {32, "x", 7, 0, 0, 0, false, false, 0, 0, -1, -1, 96}, // one-character name: Apprentice rejects empty names
+        {32, "x", 7, 0, 0, 0, false, false, 0, 0, -1, -1,
+         96}, // one-character name: Cakewalk Apprentice 1.04 rejects empty names
         {33, "A track name of exactly thirty-two", 8, 0, 0, 0, false, false, 2, 0, 1, 1, 1},
     }};
     for (const P& p : params) {
-        Track& t = s.track(p.number);
+        Stream& t = s.stream(p.number);
         t.name = p.name;
         if (p.channel >= 0) {
             t.channel = static_cast<std::uint8_t>(p.channel);
@@ -258,12 +259,12 @@ CorpusSong synParams() {
     return c;
 }
 
-CorpusSong synMaps() {
-    CorpusSong c{
+CorpusSequence synMaps() {
+    CorpusSequence c{
         "SYN_MAPS",
         "Tempo, meter and key changes, markers, SMPTE format and offset, metronome, thru, VARS flags, comments",
         {}};
-    Song& s = c.song;
+    Sequence& s = c.sequence;
     s.tempoMap.entries.clear();
     s.tempoMap.set(0, 12000);
     s.tempoMap.set(480, 6000);
@@ -292,7 +293,7 @@ CorpusSong synMaps() {
     s.metronome.velocity = 127;
     s.metronome.duration = 12;
     s.thru.mode = 1;
-    s.thru.port = 0; // Apprentice resets the thru port to one that exists on the machine
+    s.thru.port = 0; // Cakewalk resets the thru port to one that exists on the machine
     s.thru.channel = 5;
     s.thru.keyPlus = -7;
     s.thru.velPlus = 15;
@@ -310,18 +311,18 @@ CorpusSong synMaps() {
     s.vars.setSppLocateDelay(9);
     s.vars.setTransmitMidiSync(true);
     s.setComments("Line one of the comments.\nLine two, with a tab\there.\n\nLast line after a blank one.");
-    Track& t = newTrack(s, 0, "Pulse", 0, 115);
+    Stream& t = newStream(s, 0, "Pulse", 0, 115);
     for (int i = 0; i < 30; ++i) {
         t.events.push_back(Event::note(Tick{i} * 120, 0, 72, 100, 60));
     }
     return c;
 }
 
-CorpusSong synOverlap() {
-    CorpusSong c{
+CorpusSequence synOverlap() {
+    CorpusSequence c{
         "SYN_OVLP", "Overlapping same-key notes, simultaneous note-offs, 1-tick durations, chords, large times", {}};
-    Song& s = c.song;
-    Track& t = newTrack(s, 0, "Overlaps", 0, 0);
+    Sequence& s = c.sequence;
+    Stream& t = newStream(s, 0, "Overlaps", 0, 0);
     // Same key overlapping: later note ends first, then both orders of simultaneous offs.
     t.events.push_back(Event::note(0, 0, 60, 100, 200));
     t.events.push_back(Event::note(100, 0, 60, 90, 50));
@@ -336,37 +337,40 @@ CorpusSong synOverlap() {
     t.events.push_back(Event::note(900, 0, 127, 127, 120));   // highest key and velocity
     t.events.push_back(Event::note(900, 0, 0, 64, 120));      // lowest key
     t.events.push_back(Event::note(1200, 0, 60, 100, 65535)); // longest duration the file can store
-    Track& u = newTrack(s, 1, "Far away", 1, 0);
+    Stream& u = newStream(s, 1, "Far away", 1, 0);
     u.events.push_back(Event::note(1000000, 1, 60, 100, 120)); // time needs 3 bytes
     u.events.push_back(Event::note(1000120, 1, 62, 100, 120));
     return c;
 }
 
-CorpusSong synDense() {
-    CorpusSong c{
-        "SYN_DENS", "Dense song: 8 tracks with 1500 notes each and one track with 9000 notes (stream over 64 KB)", {}};
-    Song& s = c.song;
+CorpusSequence synDense() {
+    CorpusSequence c{
+        "SYN_DENS",
+        "Dense sequence: 8 streams with 1500 notes each and one stream with 9000 notes (STREAM chunk over 64 KB)",
+        {}};
+    Sequence& s = c.sequence;
     for (int tr = 0; tr < 8; ++tr) {
-        Track& t = newTrack(s, tr, "Dense " + std::to_string(tr + 1), tr, tr * 8);
+        Stream& t = newStream(s, tr, "Dense " + std::to_string(tr + 1), tr, tr * 8);
         for (int i = 0; i < 1500; ++i) {
             t.events.push_back(Event::note(Tick{i} * 30, static_cast<std::uint8_t>(tr), 36 + (i * 7 + tr) % 60,
                                            40 + (i * 13) % 80, 25));
         }
     }
-    Track& big = newTrack(s, 8, "Nine thousand", 8, 0);
+    Stream& big = newStream(s, 8, "Nine thousand", 8, 0);
     for (int i = 0; i < 9000; ++i) {
         big.events.push_back(Event::note(Tick{i} * 15, 8, 48 + (i * 5) % 36, 100, 10));
     }
     return c;
 }
 
-CorpusSong synStrings() {
-    CorpusSong c{"SYN_STRS",
-                 "String events: lyric-style text on every beat, a 127-byte text (Apprentice's maximum), MCI commands",
-                 {}};
-    Song& s = c.song;
-    Track& t = newTrack(s, 0, "Lyrics", 0, 52);
-    // Distinct words: Apprentice keeps string events in a case-insensitive atom table, so texts that
+CorpusSequence synStrings() {
+    CorpusSequence c{"SYN_STRS",
+                     "String events: lyric-style text on every beat, a 127-byte text (Cakewalk Apprentice 1.04's "
+                     "maximum), MCI commands",
+                     {}};
+    Sequence& s = c.sequence;
+    Stream& t = newStream(s, 0, "Lyrics", 0, 52);
+    // Distinct words: Cakewalk keeps string events in a case-insensitive atom table, so texts that
     // differ only in case collapse into one spelling, and an empty text is dropped.
     const std::array<std::string, 10> syllables = {"Row,",  "row2,", "row3", "your", "boat",
                                                    "gent-", "ly",    "down", "the",  "stream"};
@@ -374,7 +378,8 @@ CorpusSong synStrings() {
         t.events.push_back(Event::note(Tick{i} * 120, 0, 60 + i % 5, 100, 100));
         t.events.push_back(Event::textEvent(Tick{i} * 120, syllables[static_cast<std::size_t>(i)]));
     }
-    t.events.push_back(Event::textEvent(1200, textOf(127, "x"))); // 127 bytes: the longest text Apprentice loads
+    t.events.push_back(
+        Event::textEvent(1200, textOf(127, "x"))); // 127 bytes: the longest text Cakewalk Apprentice 1.04 loads
     t.events.push_back(Event::mciCommand(0, "open c:\\sounds\\intro.wav alias intro"));
     t.events.push_back(Event::mciCommand(60, "play intro"));
     t.events.push_back(Event::mciCommand(1200, "close intro"));
@@ -382,10 +387,10 @@ CorpusSong synStrings() {
     return c;
 }
 
-CorpusSong synWave() {
-    CorpusSong c{"SYN_WAVE", "A Wave event with a small payload (format unverified; kept separate on purpose)", {}};
-    Song& s = c.song;
-    Track& t = newTrack(s, 0, "Wave", 0, 0);
+CorpusSequence synWave() {
+    CorpusSequence c{"SYN_WAVE", "A Wave event with a small payload (format unverified; kept separate on purpose)", {}};
+    Sequence& s = c.sequence;
+    Stream& t = newStream(s, 0, "Wave", 0, 0);
     t.events.push_back(Event::note(0, 0, 60, 100, 120));
     Event w;
     w.time = 120;
@@ -400,18 +405,18 @@ CorpusSong synWave() {
     return c;
 }
 
-// ---------------------------------------------------------------- realistic songs (public domain)
+// ---------------------------------------------------------------- realistic sequences (public domain)
 
-CorpusSong rowBoat() {
-    CorpusSong c{"ROWBOAT", "Row, Row, Row Your Boat (traditional, 19th c.) as a four-part round in 6/8", {}};
-    Song& s = c.song;
+CorpusSequence rowBoat() {
+    CorpusSequence c{"ROWBOAT", "Row, Row, Row Your Boat (traditional, 19th c.) as a four-part round in 6/8", {}};
+    Sequence& s = c.sequence;
     s.tempoMap.set(0, 10800);
     setMeter(s, 1, 6, 3);
     const std::string melody = "C5q. C5q. | C5q D5e E5q. | E5q D5e E5q F5e | G5h. | "
                                "C6e C6e C6e G5e G5e G5e | E5e E5e E5e C5e C5e C5e | G5q F5e E5q D5e | C5h.";
     const std::array<int, 4> patches = {52, 53, 54, 73};
     for (int v = 0; v < 4; ++v) {
-        Track& t = newTrack(s, v, "Voice " + std::to_string(v + 1), v, patches[static_cast<std::size_t>(v)]);
+        Stream& t = newStream(s, v, "Voice " + std::to_string(v + 1), v, patches[static_cast<std::size_t>(v)]);
         t.volume = 100 - Tick{v} * 10;
         t.pan = 20 + Tick{v} * 28;
         Tick at = Tick{v} * 720; // enter two measures apart
@@ -427,14 +432,15 @@ CorpusSong rowBoat() {
     return c;
 }
 
-CorpusSong frereJacques() {
-    CorpusSong c{"FRERE", "Frere Jacques (traditional) as a round made with identical tracks and Time+ offsets", {}};
-    Song& s = c.song;
+CorpusSequence frereJacques() {
+    CorpusSequence c{
+        "FRERE", "Frere Jacques (traditional) as a round made with identical streams and Time+ offsets", {}};
+    Sequence& s = c.sequence;
     s.tempoMap.set(0, 11000);
     const std::string melody = "C5q D5q E5q C5q | C5q D5q E5q C5q | E5q F5q G5h | E5q F5q G5h | "
                                "G5e A5e G5e F5e E5q C5q | G5e A5e G5e F5e E5q C5q | C5q G4q C5h | C5q G4q C5h";
     for (int v = 0; v < 4; ++v) {
-        Track& t = newTrack(s, v, "Round " + std::to_string(v + 1), v, 71 + v);
+        Stream& t = newStream(s, v, "Round " + std::to_string(v + 1), v, 71 + v);
         if (v > 0) {
             t.timePlus = v * 960; // two measures later, applied at playback (Time+)
         }
@@ -445,25 +451,25 @@ CorpusSong frereJacques() {
     return c;
 }
 
-CorpusSong odeToJoy() {
-    CorpusSong c{"ODETOJOY", "Ode to Joy theme (Beethoven, Symphony No. 9, 1824) with bass and chords", {}};
-    Song& s = c.song;
+CorpusSequence odeToJoy() {
+    CorpusSequence c{"ODETOJOY", "Ode to Joy theme (Beethoven, Symphony No. 9, 1824) with bass and chords", {}};
+    Sequence& s = c.sequence;
     s.tempoMap.set(0, 12000);
-    Track& m = newTrack(s, 0, "Melody", 0, 56);
+    Stream& m = newStream(s, 0, "Melody", 0, 56);
     m.volume = 110;
     m.pan = 64;
     const std::string a = "E5q E5q F5q G5q | G5q F5q E5q D5q | C5q C5q D5q E5q | E5q. D5e D5h | ";
     const std::string b = "E5q E5q F5q G5q | G5q F5q E5q D5q | C5q C5q D5q E5q | D5q. C5e C5h | ";
     const std::string bridge = "D5q D5q E5q C5q | D5q E5e F5e E5q C5q | D5q E5e F5e E5q D5q | C5q D5q G4h | ";
     addMelody(m, 0, a + b + bridge + b, 0, 100, 120, 0.9);
-    Track& bass = newTrack(s, 1, "Bass", 1, 33);
+    Stream& bass = newStream(s, 1, "Bass", 1, 33);
     bass.volume = 90;
     const std::array<int, 32> roots = {48, 48, 43, 43, 48, 48, 43, 48, 48, 48, 43, 43, 48, 48, 43, 48,
                                        43, 43, 48, 48, 43, 43, 48, 43, 48, 48, 43, 43, 48, 48, 43, 48};
     for (int i = 0; i < 32; ++i) {
         bass.events.push_back(Event::note(Tick{i} * 240, 1, roots[static_cast<std::size_t>(i)], 90, 220));
     }
-    Track& chords = newTrack(s, 2, "Chords", 2, 48);
+    Stream& chords = newStream(s, 2, "Chords", 2, 48);
     chords.volume = 70;
     chords.pan = 30;
     for (int i = 0; i < 32; ++i) {
@@ -478,18 +484,18 @@ CorpusSong odeToJoy() {
     return c;
 }
 
-CorpusSong jingleBells() {
-    CorpusSong c{"JINGLE", "Jingle Bells, chorus (James Lord Pierpont, 1857) with bass", {}};
-    Song& s = c.song;
+CorpusSequence jingleBells() {
+    CorpusSequence c{"JINGLE", "Jingle Bells, chorus (James Lord Pierpont, 1857) with bass", {}};
+    Sequence& s = c.sequence;
     s.tempoMap.set(0, 14000);
-    Track& m = newTrack(s, 0, "Melody", 0, 9);
+    Stream& m = newStream(s, 0, "Melody", 0, 9);
     m.volume = 120;
     const std::string chorus = "E5q E5q E5h | E5q E5q E5h | E5q G5q C5q. D5e | E5w | "
                                "F5q F5q F5q. F5e | F5q E5q E5q E5e E5e | E5q D5q D5q E5q | D5h G5h | "
                                "E5q E5q E5h | E5q E5q E5h | E5q G5q C5q. D5e | E5w | "
                                "F5q F5q F5q. F5e | F5q E5q E5q E5e E5e | G5q G5q F5q D5q | C5w";
     addMelody(m, 0, chorus, 0, 105, 120, 0.85);
-    Track& bass = newTrack(s, 1, "Bass", 1, 32);
+    Stream& bass = newStream(s, 1, "Bass", 1, 32);
     bass.volume = 95;
     const std::string bassLine = "C4q G3q C4q G3q | C4q G3q C4q G3q | C4q G3q C4q G3q | C4q G3q C4q G3q | "
                                  "F3q C4q F3q C4q | C4q G3q C4q G3q | G3q D4q G3q D4q | G3q D4q G3q D4q | "
@@ -502,19 +508,19 @@ CorpusSong jingleBells() {
     return c;
 }
 
-CorpusSong silentNight() {
-    CorpusSong c{"SILENT", "Silent Night (Franz Xaver Gruber, 1818) in 6/8 with bass and SMPTE-locked markers", {}};
-    Song& s = c.song;
+CorpusSequence silentNight() {
+    CorpusSequence c{"SILENT", "Silent Night (Franz Xaver Gruber, 1818) in 6/8 with bass and SMPTE-locked markers", {}};
+    Sequence& s = c.sequence;
     s.tempoMap.set(0, 8400);
     setMeter(s, 1, 6, 3);
     s.timecode.rate = FrameRate::Fps30;
-    Track& m = newTrack(s, 0, "Melody", 0, 73);
+    Stream& m = newStream(s, 0, "Melody", 0, 73);
     const std::string melody =
         "G5q. A5e G5q | E5h. | G5q. A5e G5q | E5h. | D6h D6q | B5h. | C6h C6q | G5h. | "
         "A5h A5q | C6q. B5e A5q | G5q. A5e G5q | E5h. | A5h A5q | C6q. B5e A5q | G5q. A5e G5q | E5h. | "
         "D6h D6q | F6q. D6e B5q | C6h. | E6h. | C6q G5q E5q | G5q. F5e D5q | C5h. | C5h.";
     addMelody(m, 0, melody, 0, 88, 120, 0.95);
-    Track& bass = newTrack(s, 1, "Bass", 1, 42);
+    Stream& bass = newStream(s, 1, "Bass", 1, 42);
     bass.volume = 80;
     const std::string bassLine = "C4h. | C4h. | C4h. | C4h. | G3h. | G3h. | C4h. | C4h. | "
                                  "F3h. | F3h. | C4h. | C4h. | F3h. | F3h. | C4h. | C4h. | "
@@ -527,22 +533,22 @@ CorpusSong silentNight() {
     return c;
 }
 
-CorpusSong greensleeves() {
-    CorpusSong c{"GREENS", "Greensleeves (English traditional, 16th c.) in A minor, 6/8, with a ritardando", {}};
-    Song& s = c.song;
+CorpusSequence greensleeves() {
+    CorpusSequence c{"GREENS", "Greensleeves (English traditional, 16th c.) in A minor, 6/8, with a ritardando", {}};
+    Sequence& s = c.sequence;
     s.tempoMap.set(0, 9600);
     s.tempoMap.set(Tick{14} * 360, 8800);
     s.tempoMap.set(Tick{15} * 360, 7600);
     setMeter(s, 1, 6, 3);
     setKey(s, 1, 0);
-    Track& m = newTrack(s, 0, "Melody", 0, 24);
+    Stream& m = newStream(s, 0, "Melody", 0, 24);
     const std::string melody =
         "re A4e | C5q D5e E5q F5e E5e | D5q B4e G4q A4e B4e | C5q A4e A4q G#4e A4e | B4q G#4e E4q A4e B4e | "
         "C5q D5e E5q F5e E5e | D5q B4e G4q A4e B4e | C5e B4e A4q G#4e F#4e G#4e | A4q. A4q. | "
         "G5h. | G5q F5e E5q D5e E5e | D5q B4e G4q A4e B4e | C5q A4e A4q G#4e A4e | B4q G#4e E4q. | "
         "G5h. | G5q F5e E5q D5e E5e | A4h.";
     addMelody(m, 0, melody, 0, 84, 120, 0.9);
-    Track& acc = newTrack(s, 1, "Accompaniment", 1, 46);
+    Stream& acc = newStream(s, 1, "Accompaniment", 1, 46);
     acc.volume = 70;
     for (int bar = 0; bar < 16; ++bar) {
         const bool minor = bar % 4 != 3;
@@ -553,17 +559,17 @@ CorpusSong greensleeves() {
     return c;
 }
 
-CorpusSong amazingGrace() {
-    CorpusSong c{"AMAZING", "Amazing Grace (tune New Britain, 1829) in F major, 3/4, with a pickup", {}};
-    Song& s = c.song;
+CorpusSequence amazingGrace() {
+    CorpusSequence c{"AMAZING", "Amazing Grace (tune New Britain, 1829) in F major, 3/4, with a pickup", {}};
+    Sequence& s = c.sequence;
     s.tempoMap.set(0, 7200);
     setMeter(s, 1, 3, 2);
     setKey(s, 1, -1);
-    Track& m = newTrack(s, 0, "Melody", 0, 20);
+    Stream& m = newStream(s, 0, "Melody", 0, 20);
     const std::string melody = "rh C5q | F5h A5e F5e | A5h G5q | F5h D5q | C5h C5q | F5h A5e F5e | A5h G5q | C6h. | "
                                "C6h A5e C6e | A5h F5q | A5h A5e G5e | F5h D5q | C5h C5q | F5h A5e F5e | A5h G5q | F5h.";
     addMelody(m, 0, melody, 0, 92, 120, 0.95);
-    Track& bass = newTrack(s, 1, "Bass", 1, 32);
+    Stream& bass = newStream(s, 1, "Bass", 1, 32);
     const std::string bassLine = "rh. | F3h. | F3h. | Bb3h. | F3h. | F3h. | C4h. | F3h. | F3h. | "
                                  "F3h. | Bb3h. | F3h. | C4h. | F3h. | C4h. | F3h. | F3h.";
     addMelody(bass, 0, bassLine, 1, 80, 120, 0.9);
@@ -571,13 +577,14 @@ CorpusSong amazingGrace() {
     return c;
 }
 
-CorpusSong twinkle() {
-    CorpusSong c{"TWINKLE",
-                 "Twinkle, Twinkle, Little Star (French traditional, 18th c.) with block chords and varied velocities",
-                 {}};
-    Song& s = c.song;
+CorpusSequence twinkle() {
+    CorpusSequence c{
+        "TWINKLE",
+        "Twinkle, Twinkle, Little Star (French traditional, 18th c.) with block chords and varied velocities",
+        {}};
+    Sequence& s = c.sequence;
     s.tempoMap.set(0, 10000);
-    Track& m = newTrack(s, 0, "Melody", 0, 11);
+    Stream& m = newStream(s, 0, "Melody", 0, 11);
     const std::string melody = "C5q C5q G5q G5q | A5q A5q G5h | F5q F5q E5q E5q | D5q D5q C5h | "
                                "G5q G5q F5q F5q | E5q E5q D5h | G5q G5q F5q F5q | E5q E5q D5h | "
                                "C5q C5q G5q G5q | A5q A5q G5h | F5q F5q E5q E5q | D5q D5q C5h";
@@ -586,7 +593,7 @@ CorpusSong twinkle() {
     for (std::size_t i = 0; i < m.events.size(); ++i) {
         m.events[i].data2 = 60 + static_cast<int>(i * 60 / m.events.size());
     }
-    Track& ch = newTrack(s, 1, "Chords", 1, 0);
+    Stream& ch = newStream(s, 1, "Chords", 1, 0);
     ch.volume = 75;
     const std::array<int, 24> chordRoots = {0, 0, 5, 0, 5, 0, 7, 0, 7, 0, 7, 0, 7, 0, 7, 0, 0, 0, 5, 0, 5, 0, 7, 0};
     for (int i = 0; i < 24 && Tick{i} * 240 < end; ++i) {
@@ -598,20 +605,20 @@ CorpusSong twinkle() {
     return c;
 }
 
-CorpusSong furElise() {
-    CorpusSong c{"FURELISE", "Fuer Elise, opening (Beethoven, WoO 59, 1810) in 3/8 for two hands", {}};
-    Song& s = c.song;
+CorpusSequence furElise() {
+    CorpusSequence c{"FURELISE", "Fuer Elise, opening (Beethoven, WoO 59, 1810) in 3/8 for two hands", {}};
+    Sequence& s = c.sequence;
     s.tempoMap.set(0, 7000); // eighth note = 140, in 3/8
     setMeter(s, 1, 3, 3);
     setKey(s, 1, 0);
-    Track& rh = newTrack(s, 0, "Right hand", 0, 0);
+    Stream& rh = newStream(s, 0, "Right hand", 0, 0);
     rh.pan = 80;
     // Cakewalk octave numbering: middle C = C5, so Beethoven's e'' is E6 here.
     const std::string right =
         "E6s D#6s | E6s D#6s E6s B5s D6s C6s | A5e rs C5s E5s A5s | B5e rs E5s G#5s B5s | "
         "C6e rs E5s E6s D#6s | E6s D#6s E6s B5s D6s C6s | A5e rs C5s E5s A5s | B5e rs E5s C6s B5s | A5q";
     addMelody(rh, 0, right, 0, 80, 120, 0.9);
-    Track& lh = newTrack(s, 1, "Left hand", 1, 0);
+    Stream& lh = newStream(s, 1, "Left hand", 1, 0);
     lh.pan = 40;
     const std::string left = "re | re. | A3s E4s A4s re. | E3s E4s G#4s re. | A3s E4s A4s re. | re. | "
                              "A3s E4s A4s re. | E3s E4s G#4s re. | A3e";
@@ -623,7 +630,7 @@ CorpusSong furElise() {
 
 } // namespace
 
-std::vector<CorpusSong> allSongs() {
+std::vector<CorpusSequence> allSequences() {
     return {synMinimal(),  synKinds(),     synParams(),    synMaps(),      synOverlap(), synDense(),
             synStrings(),  synWave(),      rowBoat(),      frereJacques(), odeToJoy(),   jingleBells(),
             silentNight(), greensleeves(), amazingGrace(), twinkle(),      furElise()};

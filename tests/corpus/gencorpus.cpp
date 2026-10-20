@@ -1,8 +1,8 @@
-// gencorpus: writes the corpus source songs as .WRK files (normalized layout) into a directory
-// and prints the song list in Markdown.
+// gencorpus: writes the corpus source sequences as .WRK files (normalized layout) into a directory
+// and prints the sequence list in Markdown.
 //
 //   gencorpus <output dir>
-#include "songs.hpp"
+#include "sequences.hpp"
 #include "sseq/sseq.hpp"
 
 #include <cstdio>
@@ -16,9 +16,9 @@ int main(int argc, char** argv) {
     const std::filesystem::path out = argv[1];
     std::filesystem::create_directories(out);
     std::printf("| File | Description |\n|---|---|\n");
-    for (const sseq::corpus::CorpusSong& c : sseq::corpus::allSongs()) {
+    for (const sseq::corpus::CorpusSequence& c : sseq::corpus::allSequences()) {
         const std::filesystem::path path = out / (c.name + ".WRK");
-        sseq::wrk::writeFile(c.song, path.string(), sseq::wrk::WriteMode::Normalize);
+        sseq::wrk::writeFile(c.sequence, path.string(), sseq::wrk::WriteMode::Normalize);
         std::printf("| `%s.WRK` | %s |\n", c.name.c_str(), c.description.c_str());
     }
     return 0;

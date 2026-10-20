@@ -1,4 +1,6 @@
-// libsseq: byte cursor helpers and narrowing conversions (internal).
+// libsseq: byte-level helpers shared by the readers and writers (not installed): narrowing to the
+// integer sizes the file formats use, little-endian assembly, a byte cursor (Reader), a byte
+// builder (Writer), and whole-file read/write.
 #pragma once
 
 #include "sseq/types.hpp"
@@ -10,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace sseq::detail {
+namespace sseq::bytes {
 
 /// Explicit narrowing to the byte-sized integer types used in the file formats.
 template <class T>
@@ -142,13 +144,13 @@ public:
     std::vector<std::uint8_t> out;
 
     [[nodiscard]] std::size_t size() const noexcept { return out.size(); }
-    void u8(const std::uint32_t v) { out.push_back(detail::u8(v)); }
-    void s8(const int v) { out.push_back(detail::s8(v)); }
+    void u8(const std::uint32_t v) { out.push_back(bytes::u8(v)); }
+    void s8(const int v) { out.push_back(bytes::s8(v)); }
     void u16(const std::uint32_t v) {
         u8(v);
         u8(v >> 8);
     }
-    void s16(const int v) { u16(detail::u16(static_cast<std::int16_t>(v))); }
+    void s16(const int v) { u16(bytes::u16(static_cast<std::int16_t>(v))); }
     void u24(const std::uint32_t v) {
         u8(v);
         u8(v >> 8);
@@ -177,7 +179,7 @@ public:
         if (s.size() > 255) {
             throw Error("string too long for a Pascal string");
         }
-        u8(detail::u32(s.size()));
+        u8(bytes::u32(s.size()));
         str(s);
     }
     template <std::size_t N>
@@ -188,7 +190,7 @@ public:
         std::array<std::uint8_t, 5> buf{};
         std::size_t n = 0;
         do {
-            buf[n++] = detail::u8(v & 0x7fU);
+            buf[n++] = bytes::u8(v & 0x7fU);
             v >>= 7;
         } while (v != 0);
         while (n-- > 0) {
@@ -196,14 +198,14 @@ public:
         }
     }
     void patchU32(const std::size_t at, const std::uint32_t v) {
-        out[at] = detail::u8(v);
-        out[at + 1] = detail::u8(v >> 8);
-        out[at + 2] = detail::u8(v >> 16);
-        out[at + 3] = detail::u8(v >> 24);
+        out[at] = bytes::u8(v);
+        out[at + 1] = bytes::u8(v >> 8);
+        out[at + 2] = bytes::u8(v >> 16);
+        out[at + 3] = bytes::u8(v >> 24);
     }
 };
 
 [[nodiscard]] std::vector<std::uint8_t> readFileBytes(const std::string& path);
 void writeFileBytes(const std::string& path, const std::vector<std::uint8_t>& bytes);
 
-} // namespace sseq::detail
+} // namespace sseq::bytes
