@@ -1,0 +1,46 @@
+cmake_minimum_required(VERSION 3.20)
+project(libsseq VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+option(SSEQ_BUILD_TOOLS "Build the sseqtool command-line tool" ON)
+option(SSEQ_BUILD_TESTS "Build the tests" ON)
+# Directory with reference files for the corpus tests (not part of the repository).
+set(SSEQ_TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../Cakewalk" CACHE PATH "Directory holding the Cakewalk reference files")
+
+add_library(sseq
+    src/model.cpp
+    src/wrk.cpp
+    src/smf.cpp
+)
+target_include_directories(sseq PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+set(SSEQ_WARNINGS $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wpedantic -Wshadow -Wold-style-cast -Wconversion -Wsign-conversion>)
+target_compile_options(sseq PRIVATE ${SSEQ_WARNINGS})
+add_library(sseq::sseq ALIAS sseq)
+
+if(SSEQ_BUILD_TOOLS)
+    add_executable(sseqtool tools/sseqtool.cpp)
+    target_link_libraries(sseqtool PRIVATE sseq)
+    target_compile_options(sseqtool PRIVATE ${SSEQ_WARNINGS})
+endif()
+
+if(SSEQ_BUILD_TESTS)
+    enable_testing()
+    add_executable(sseq_unit_tests tests/unit_tests.cpp)
+    target_link_libraries(sseq_unit_tests PRIVATE sseq)
+    target_compile_options(sseq_unit_tests PRIVATE ${SSEQ_WARNINGS})
+    add_test(NAME unit COMMAND sseq_unit_tests)
+
+    add_executable(sseq_corpus_tests tests/corpus_tests.cpp)
+    target_link_libraries(sseq_corpus_tests PRIVATE sseq)
+    target_compile_options(sseq_corpus_tests PRIVATE ${SSEQ_WARNINGS})
+    add_test(NAME corpus COMMAND sseq_corpus_tests "${SSEQ_TEST_DATA_DIR}")
+endif()
+
+install(TARGETS sseq EXPORT sseqTargets)
+install(DIRECTORY include/ DESTINATION include)
