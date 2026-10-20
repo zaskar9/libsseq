@@ -1,6 +1,7 @@
 // libsseq umbrella header.
 #pragma once
 
+#include "engine.hpp"
 #include "event.hpp"
 #include "maps.hpp"
 #include "smf.hpp"

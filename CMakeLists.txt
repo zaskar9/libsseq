@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(libsseq VERSION 0.1.0 LANGUAGES CXX)
+project(libsseq VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,6 +12,7 @@ add_library(sseq
     src/model.cpp
     src/wrk.cpp
     src/smf.cpp
+    src/engine.cpp
 )
 target_include_directories(sseq PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -33,6 +34,11 @@ if(SSEQ_BUILD_TESTS)
     target_link_libraries(sseq_unit_tests PRIVATE sseq)
     target_compile_options(sseq_unit_tests PRIVATE ${SSEQ_WARNINGS})
     add_test(NAME unit COMMAND sseq_unit_tests)
+
+    add_executable(sseq_engine_tests tests/engine_tests.cpp)
+    target_link_libraries(sseq_engine_tests PRIVATE sseq_corpus)
+    target_compile_options(sseq_engine_tests PRIVATE ${SSEQ_WARNINGS})
+    add_test(NAME engine COMMAND sseq_engine_tests)
 
     # The corpus: song definitions shared by the generator and the corpus test.
     add_library(sseq_corpus STATIC tests/corpus/songs.cpp)

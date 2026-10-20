@@ -10,6 +10,9 @@ Ensemble project.
 - Song model: tracks, events (notes with durations), tempo map, meter and key maps, SMPTE
   time format, markers, sysex banks, metronome and MIDI-thru settings, comments.
 - Time conversions: ticks ↔ seconds ↔ measure:beat:tick ↔ SMPTE frames (including drop-frame).
+- Playback engine: a `Transport` (play/stop/seek, loop, mute/solo, tempo ratio, patch and
+  controller chase) that schedules timestamped MIDI messages ahead of a caller-supplied clock
+  into a caller-supplied sink, so it runs unchanged on CoreMIDI or in a test; offline `render()`.
 - No dependencies beyond the C++ standard library.
 
 See `DESIGN.md` for the architecture and the mapping from the original engine's API.
@@ -58,6 +61,6 @@ sseq::smf::writeFile(song, "song.mid");
 
 ## Status
 
-v0.1: model, formats, tool, tests. Planned: editing operations (quantize, transpose, slide,
-length, controller fill, cut/copy/paste with event filter), engine (transport, scheduler),
-CoreMIDI adapter and Swift package for the app.
+v0.2: model, formats, engine, tool, tests. Planned: CoreMIDI adapter and Swift package for the
+app; editing operations (quantize, transpose, slide, length, controller fill, cut/copy/paste
+with event filter).

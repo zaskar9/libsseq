@@ -17,8 +17,8 @@ reference to compare behaviour against.
 |---|---|---|---|
 | Model | `sseq::Song`, `Track`, `Event`, `TempoMap`, `MeterMap`, `Timecode`, `Marker`, `SysxBank` (`song.hpp`, `maps.hpp`, `event.hpp`, `model.cpp`) | nothing | v0.1 |
 | Formats | `sseq::wrk` (`wrk.hpp/.cpp`), `sseq::smf` (`smf.hpp/.cpp`) | Model | v0.1 |
-| Engine | transport, scheduler, `MidiSink` / clock interfaces | Model | v0.2 (planned) |
-| Platform | CoreMIDI sink and clock, Swift package | Engine | v0.2 (planned, in the app) |
+| Engine | `sseq::engine` (`engine.hpp/.cpp`): `Transport`, `render`, `MidiSink` / `Clock` interfaces | Model | v0.2 |
+| Platform | CoreMIDI sink and clock, Swift package | Engine | v0.3 (planned, in the app) |
 | Tools | `sseqtool` | Formats | v0.1 |
 
 Each layer is testable without the one above. The model has no I/O and no platform code.
@@ -82,19 +82,40 @@ Not yet covered: the payload of Wave events (never produced in the observed sess
 (a Cakewalk Pro Faders-view state; preserved verbatim), later format versions (chunks 36, 44,
 45, 49, 55, 74 and others; preserved verbatim, not interpreted), sysex bank files, `.MFF`.
 
-## 5. Engine (planned, v0.2)
+## 5. Engine (v0.2)
 
-- `MidiSink` interface: `send(timestamp, bytes)` for short messages and sysex; `flush()`.
-- `Clock` interface: `now()` in seconds, monotonic.
-- `Scheduler`: converts ticks to seconds through the tempo map and emits events with absolute
-  timestamps a configurable look-ahead (e.g. 50–100 ms) ahead of the clock; tempo changes during
-  playback re-anchor the conversion at the change point. Note-offs are scheduled from note
-  durations; a "panic" sends all-notes-off.
-- `Transport`: play/stop/rewind, Now time, loop/auto-shuttle, metronome, mute/solo, Key+/Vel+/
-  Time+ applied at output as Apprentice does, patch/volume/pan sent at start and on seek
-  ("patch search-back").
-- CoreMIDI adapter in the Swift app: `MIDITimeStamp` from `mach_absolute_time`, one output
-  port per Cakewalk port index.
+`include/sseq/engine.hpp`, namespace `sseq::engine`. Platform-neutral: the application supplies
+the two things that differ between platforms and the engine does everything else.
+
+- `Clock`: monotonic `now()` in seconds. `SteadyClock` wraps `std::chrono::steady_clock`; tests
+  use a fake clock they advance by hand.
+- `MidiSink`: receives `MidiMessage{time, port, size, data[3]}` and `sendSysex(time, port,
+  bytes)` with absolute timestamps up to the look-ahead in the future, plus `flush()` at the end
+  of each pump. A CoreMIDI sink converts `time` to a `MIDITimeStamp`; a test sink records.
+- `Transport(song, clock, sink, options)`: `play`/`stop`/`rewind`/`seek`, `now()` in ticks,
+  `setMuted`/`setSolo` (mute, solo), `setTempoRatio` (the 0.50/1.00/2.00 buttons), an optional
+  loop range (auto-shuttle), and a string-event handler for Text/MCI/Wave events. The caller
+  calls `pump()` every 10–20 ms; each pump schedules everything up to `clock.now() + lookAhead`
+  so the caller's timer jitter does not reach the MIDI port.
+- Playlist: on construction the tracks are flattened into one list of outputs sorted by tick
+  (note-off < controller/patch/wheel < note-on < sysex < string at equal ticks). Key+, Vel+,
+  Time+, forced channel, port and track loop repetitions (`reps`, period = whole measures) are
+  applied here, as Apprentice applies them at output time rather than in the data.
+- Tick ↔ clock: `tempoMap.tickToSeconds` / `secondsToTick` scaled by the tempo ratio, anchored
+  at the last play/seek/ratio change, so tempo changes inside the song are exact and ratio
+  changes take effect immediately.
+- Start: track parameters (patch, volume, pan) for every track with events, then a "chase" of
+  the latest patch/controller/wheel before the position per (port, channel, controller), as
+  Apprentice's patch/controller search-back does. Both are options.
+- Stop and seek: notes still sounding are turned off (a count per (port, channel, key) keeps
+  overlapping notes correct and never emits an off for a note that was never turned on);
+  optionally mod wheel, sustain, channel pressure and pitch wheel are zeroed (the VARS flag).
+  `PlaybackOptions::fromSong` takes chase and zero-controllers from the song's settings.
+- `render(song, options, from, thru)`: the same scheduling offline, returning the messages with
+  times in seconds from `from`; this is what the tests check and what an export-to-audio or
+  SMF-0 writer would consume.
+- Not in the engine: MIDI input/recording, thru and the metronome (they need a real-time input
+  path and belong to the platform layer), MIDI sync output.
 
 ## 6. Build and test
 
@@ -102,6 +123,11 @@ Not yet covered: the payload of Wave events (never produced in the observed sess
 - Unit tests (`tests/unit_tests.cpp`): model and time conversions, write/read of a new song,
   SMF round trip, a hand-built DOS-era file fixture (old TEMPO, MEMRGN, chunk 25) and malformed
   input.
+- Engine tests (`tests/engine_tests.cpp`): offline rendering of hand-built songs (ordering,
+  Key+/Vel+/Time+, mute/solo, tempo changes and ratio, loops, track repetitions, sysex and
+  string events), and a `Transport` driven by a fake clock and a recording sink (look-ahead
+  windows, stop cutting notes and zeroing controllers, resume, seek with chase); finally every
+  corpus song is rendered and its message count checked against the model.
 - Corpus tests (`tests/corpus_tests.cpp`, data in `tests/data/`): the songs defined in
   `tests/corpus/songs.cpp` were written by libsseq, loaded into Cakewalk Apprentice 1.04 under
   Wine and saved by it as `.WRK` and `.MID`, and the `.MID` was imported and saved again. The test
