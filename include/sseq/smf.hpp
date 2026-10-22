@@ -10,12 +10,24 @@
 
 namespace sseq::smf {
 
-/// Read a format 0 or 1 SMF into a Sequence, applying Cakewalk's import rules:
-/// Program Change / CC7 / CC10 at time 0 become stream patch / volume / pan, Text meta
-/// becomes a Text event, Marker meta a marker, Cue meta a SMPTE-locked marker,
-/// Port meta the stream port, tempo / time signature / key signature fill the maps.
-[[nodiscard]] Sequence read(const std::vector<std::uint8_t>& bytes);
-[[nodiscard]] Sequence readFile(const std::string& path);
+struct ReadOptions {
+    /// Cakewalk takes every Program Change, CC7 and CC10 at tick 0 of a track as the stream's
+    /// patch, volume and pan (the last one wins, whatever the channel) and drops them from the
+    /// stream. On a track that mixes channels (a format 0 file, say) this loses the other
+    /// channels' programs; Cakewalk Apprentice 1.04 does it anyway. libsseq does it only for a
+    /// track whose events are all on one channel, where nothing is lost, unless this is set.
+    bool absorbParametersOnMixedTracks = false;
+};
+
+/// Read a format 0 or 1 SMF into a Sequence, applying Cakewalk's import rules: Program Change /
+/// CC7 / CC10 at tick 0 become the stream's patch / volume / pan (see ReadOptions); a track whose
+/// events are all on one channel gets that channel as its forced channel, a mixed track none; Text
+/// meta in the first track becomes a marker, in other tracks a Text event; Marker meta a marker,
+/// Cue meta a SMPTE-locked marker; Port meta the stream port; tempo / time signature / key
+/// signature fill the maps; note-offs pair with the most recent open note of the key. The file's
+/// resolution is kept (Cakewalk rescales to its own timebase, truncating ticks).
+[[nodiscard]] Sequence read(const std::vector<std::uint8_t>& bytes, const ReadOptions& options = {});
+[[nodiscard]] Sequence readFile(const std::string& path, const ReadOptions& options = {});
 
 struct WriteOptions {
     /// Write the "MIDI Port" meta event (type 0x21) at the start of every track, as Cakewalk

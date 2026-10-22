@@ -262,11 +262,11 @@ sseq_sequence* sseq_sequence_read_wrk_data(const uint8_t* bytes, const size_t si
 }
 
 sseq_sequence* sseq_sequence_read_mid(const char* path) {
-    return readFileWith(sseq::smf::readFile, path);
+    return readFileWith([](const std::string& p) { return sseq::smf::readFile(p); }, path);
 }
 
 sseq_sequence* sseq_sequence_read_mid_data(const uint8_t* bytes, const size_t size) {
-    return readWith(sseq::smf::read, bytes, size);
+    return readWith([](const std::vector<std::uint8_t>& b) { return sseq::smf::read(b); }, bytes, size);
 }
 
 int sseq_sequence_write_wrk(const sseq_sequence* sequence, const char* path, const int normalize) {

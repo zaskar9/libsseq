@@ -92,6 +92,15 @@ Two details found while matching Cakewalk's SMF output byte for byte:
   semantically (same events at the same ticks per stream), not byte for byte.
 - On import, a note-off is paired with the most recent open note of the same key (LIFO),
   which is what Cakewalk does (verified against Cakewalk Apprentice 1.04's own import of `out10.mid`).
+- Import of a track that mixes channels (a format 0 file; verified with Cakewalk Apprentice 1.04
+  importing the classic General MIDI demo `canyon.mid`): the stream gets no forced channel (a
+  single-channel track gets its channel), text meta events in the first track become markers,
+  and the resolution is kept (Apprentice rescales to its 120 ppq timebase, truncating ticks).
+  Apprentice takes every Program Change, CC7 and CC10 at tick 0 as the stream's patch, volume
+  and pan, last one wins whatever the channel, and drops them, which loses the other channels'
+  programs on a mixed track; libsseq does that only for single-channel tracks and keeps the
+  events otherwise (`ReadOptions::absorbParametersOnMixedTracks` restores Apprentice's
+  behaviour).
 
 Not yet covered: the payload of Wave events (never produced in the observed sessions), chunk 25
 (a Cakewalk Professional Faders-view state; preserved verbatim), later format versions (chunks 36, 44,

@@ -11,6 +11,7 @@
 #include <cmath>
 #include <map>
 #include <ranges>
+#include <set>
 #include <sstream>
 #include <string_view>
 
@@ -251,11 +252,12 @@ void putByMeasure(std::vector<Entry>& entries, const Entry& e) {
     entries.insert(pos, e);
 }
 
-void importTrack(Sequence& sequence, Reader& r, const int streamNumber, const bool conductor) {
+void importTrack(Sequence& sequence, Reader& r, const int streamNumber, const bool firstTrack,
+                 const ReadOptions& options) {
     Stream t;
     t.number = streamNumber;
-    bool haveParams = false;
-    std::optional<std::uint8_t> firstChannel;
+    std::set<std::uint8_t> channels;              // channels seen in channel messages
+    std::vector<std::size_t> parameterCandidates; // indices of Program / CC7 / CC10 events at tick 0
     std::map<int, std::vector<std::size_t>> open; // (channel << 8 | key) -> indices of open notes
     Tick time = 0;
     int running = -1;
@@ -280,14 +282,21 @@ void importTrack(Sequence& sequence, Reader& r, const int streamNumber, const bo
                     t.port = d[0];
                 }
                 break;
-            case kMetaText: {
-                Event e;
-                e.time = time;
-                e.kind = EventKind::Text;
-                e.payload = d;
-                t.events.push_back(std::move(e));
+            case kMetaText:
+                if (firstTrack) {
+                    // Cakewalk turns text in the first track into markers.
+                    Marker m;
+                    m.time = time;
+                    m.name = s;
+                    sequence.markers.push_back(std::move(m));
+                } else {
+                    Event e;
+                    e.time = time;
+                    e.kind = EventKind::Text;
+                    e.payload = d;
+                    t.events.push_back(std::move(e));
+                }
                 break;
-            }
             case kMetaMarker:
             case kMetaCue: {
                 Marker m;
@@ -298,10 +307,11 @@ void importTrack(Sequence& sequence, Reader& r, const int streamNumber, const bo
                 break;
             }
             case kMetaTempo:
-                if (d.size() == 3) {
+                if (d.size() >= 3) {
                     const std::uint32_t usec = bytes::le(d[2], d[1], d[0], 0);
-                    if (usec != 0) {
-                        sequence.tempoMap.set(time, static_cast<int>(std::lround(60.0e6 * 100.0 / usec)));
+                    if (usec > 0) {
+                        // bpm x 100 = 60e8 / usec, rounded
+                        sequence.tempoMap.set(time, static_cast<int>((6000000000ULL + usec / 2) / usec));
                     }
                 }
                 break;
@@ -311,7 +321,15 @@ void importTrack(Sequence& sequence, Reader& r, const int streamNumber, const bo
                     m.measure = sequence.meterMap.measureAt(time);
                     m.numerator = d[0];
                     m.denominatorLog2 = d[1];
-                    putByMeasure(sequence.meterMap.entries, m);
+                    auto& entries = sequence.meterMap.entries;
+                    const auto it = std::ranges::find(entries, m.measure, &MeterEntry::measure);
+                    if (it != entries.end()) {
+                        it->numerator = m.numerator;
+                        it->denominatorLog2 = m.denominatorLog2;
+                    } else {
+                        entries.push_back(m);
+                        std::ranges::sort(entries, {}, &MeterEntry::measure);
+                    }
                 }
                 break;
             case kMetaKeySig:
@@ -319,15 +337,23 @@ void importTrack(Sequence& sequence, Reader& r, const int streamNumber, const bo
                     KeyEntry k;
                     k.measure = sequence.meterMap.measureAt(time);
                     k.alterations = static_cast<std::int8_t>(d[0]);
-                    putByMeasure(sequence.keyMap, k);
+                    auto& keys = sequence.keyMap;
+                    const auto it = std::ranges::find(keys, k.measure, &KeyEntry::measure);
+                    if (it != keys.end()) {
+                        it->alterations = k.alterations;
+                    } else {
+                        keys.push_back(k);
+                        std::ranges::sort(keys, {}, &KeyEntry::measure);
+                    }
                 }
                 break;
             default:
-                break;
+                break; // other meta events are ignored
             }
             continue;
         }
-        if (b == 0xf0 || b == 0xf7) { // sysex: not imported yet
+        if (b == 0xf0 || b == 0xf7) {
+            // Sysex in a MIDI file: Cakewalk ignores it on import (banks are separate).
             r.skip(r.vlq());
             continue;
         }
@@ -346,9 +372,7 @@ void importTrack(Sequence& sequence, Reader& r, const int streamNumber, const bo
         }
         const std::uint8_t ch = status & 0x0fU;
         const std::uint8_t kind = status & 0xf0U;
-        if (!firstChannel) {
-            firstChannel = ch;
-        }
+        channels.insert(ch);
         Event e;
         e.time = time;
         e.channel = ch;
@@ -376,22 +400,19 @@ void importTrack(Sequence& sequence, Reader& r, const int streamNumber, const bo
             e.data1 = d1;
             e.data2 = r.u8();
             break;
-        case 0xb0: {
+        case 0xb0:
             e.kind = EventKind::Controller;
             e.data1 = d1;
             e.data2 = r.u8();
-            if (time == 0 && !haveParams && (d1 == 7 || d1 == 10)) {
-                (d1 == 7 ? t.volume : t.pan) = e.data2;
-                continue;
+            if (time == 0 && (d1 == 7 || d1 == 10)) {
+                parameterCandidates.push_back(t.events.size());
             }
             break;
-        }
         case 0xc0:
             e.kind = EventKind::Patch;
             e.data1 = d1;
-            if (time == 0 && !haveParams) {
-                t.patch = d1; // the last Program Change before the first other event wins
-                continue;
+            if (time == 0) {
+                parameterCandidates.push_back(t.events.size());
             }
             break;
         case 0xd0:
@@ -407,22 +428,40 @@ void importTrack(Sequence& sequence, Reader& r, const int streamNumber, const bo
         default:
             throw Error("unexpected status byte in MIDI file");
         }
-        if (e.kind != EventKind::Patch && e.kind != EventKind::Controller) {
-            haveParams = true; // the first "real" event ends the parameter prefix
-        }
         t.events.push_back(e);
     }
-    if (conductor && t.events.empty() && !firstChannel) {
-        return;
+    if (firstTrack && t.events.empty() && channels.empty()) {
+        return; // a conductor track: maps and markers only
     }
-    t.channel = firstChannel;
+    if (channels.size() == 1) {
+        t.channel = *channels.begin();
+    }
+    // Program / CC7 / CC10 at tick 0 become the stream's parameters (the last of each wins) and
+    // leave the stream, as in Cakewalk; on a mixed track only when asked for (see ReadOptions).
+    if (channels.size() <= 1 || options.absorbParametersOnMixedTracks) {
+        for (const std::size_t i : parameterCandidates) {
+            const Event& e = t.events[i];
+            if (e.kind == EventKind::Patch) {
+                t.patch = e.data1;
+            } else if (e.data1 == 7) {
+                t.volume = e.data2;
+            } else {
+                t.pan = e.data2;
+            }
+        }
+        std::size_t removed = 0;
+        for (const std::size_t i : parameterCandidates) {
+            t.events.erase(t.events.begin() + static_cast<std::ptrdiff_t>(i - removed));
+            ++removed;
+        }
+    }
     sortEvents(t.events);
     sequence.streams.push_back(std::move(t));
 }
 
 } // namespace
 
-Sequence read(const std::vector<std::uint8_t>& bytes) {
+Sequence read(const std::vector<std::uint8_t>& bytes, const ReadOptions& options) {
     Reader r(bytes);
     if (r.remaining() < 14 || r.str(kHeaderMagic.size()) != kHeaderMagic) {
         throw Error("not a Standard MIDI File");
@@ -455,7 +494,7 @@ Sequence read(const std::vector<std::uint8_t>& bytes) {
         Reader t(r.ptr(), len);
         r.skip(len);
         const std::size_t before = sequence.streams.size();
-        importTrack(sequence, t, number, format == 1 && i == 0);
+        importTrack(sequence, t, number, i == 0, options);
         if (sequence.streams.size() > before) {
             ++number;
         }
@@ -463,8 +502,8 @@ Sequence read(const std::vector<std::uint8_t>& bytes) {
     return sequence;
 }
 
-Sequence readFile(const std::string& path) {
-    return read(bytes::readFileBytes(path));
+Sequence readFile(const std::string& path, const ReadOptions& options) {
+    return read(bytes::readFileBytes(path), options);
 }
 
 // ---------------------------------------------------------------- dump

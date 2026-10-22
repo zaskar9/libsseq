@@ -291,12 +291,63 @@ static void testMalformedInput() {
 
 // NOLINTEND(bugprone-unchecked-optional-access)
 
+/// A format 0 file with two channels (as the classic General MIDI demo files are): the track must
+/// get no forced channel, keep every channel's programs, and turn its text into markers. A
+/// single-channel track gets the channel and the tick-0 parameters, even after a note at tick 0.
+static void testSmfImportRules() {
+    const auto file = [](const std::vector<std::uint8_t>& track) {
+        std::vector<std::uint8_t> b = {'M', 'T', 'h', 'd', 0, 0, 0, 6, 0, 0, 0, 1, 0, 120, 'M', 'T', 'r', 'k'};
+        const auto n = static_cast<std::uint32_t>(track.size());
+        b.insert(b.end(), {static_cast<std::uint8_t>(n >> 24), static_cast<std::uint8_t>(n >> 16),
+                           static_cast<std::uint8_t>(n >> 8), static_cast<std::uint8_t>(n)});
+        b.insert(b.end(), track.begin(), track.end());
+        return b;
+    };
+    // Mixed: program on ch 1 and ch 2 at tick 0, CC7 on ch 2 after a note at tick 0, a text meta.
+    const std::vector<std::uint8_t> mixed = {0,   0xff, 0x01, 5,   'h', 'e',  'l', 'l',
+                                             'o',                  // text at 0 -> marker (first track)
+                                             0,   0xc0, 5,         // program 5 on ch 1
+                                             0,   0xc1, 9,         // program 9 on ch 2
+                                             0,   0x90, 60,   100, // note on ch 1
+                                             0,   0xb1, 7,    100, // CC7 on ch 2 at tick 0, after a note
+                                             120, 0x80, 60,   0,   // note off
+                                             0,   0x91, 64,   90,  120, 0x81, 64,  0, // note on ch 2
+                                             0,   0xff, 0x2f, 0};
+    Sequence m = smf::read(file(mixed));
+    CHECK_EQ(m.streams.size(), 1U);
+    CHECK(!m.streams[0].channel);
+    CHECK(!m.streams[0].patch);
+    CHECK(!m.streams[0].volume);
+    CHECK_EQ(m.streams[0].events.size(), 5U); // 2 programs, CC7, 2 notes; text became a marker
+    CHECK_EQ(m.markers.size(), 1U);
+    CHECK_EQ(m.markers[0].name, "hello");
+    // Apprentice's own (lossy) behaviour on request.
+    smf::ReadOptions apprentice;
+    apprentice.absorbParametersOnMixedTracks = true;
+    Sequence a = smf::read(file(mixed), apprentice);
+    CHECK_EQ(a.streams[0].patch.value_or(-1), 9); // the last program at tick 0, whatever the channel
+    CHECK_EQ(a.streams[0].volume.value_or(-1), 100);
+    CHECK_EQ(a.streams[0].events.size(), 2U);
+    // Single channel: forced channel, parameters absorbed although they follow a note at tick 0.
+    const std::vector<std::uint8_t> single = {0,  0xc2, 5, 0,    0x92, 60,  100,  0,  0xb2, 7, 90,   0,    0xb2,
+                                              10, 20,   0, 0xc2, 6,    120, 0x82, 60, 0,    0, 0xff, 0x2f, 0};
+    Sequence s = smf::read(file(single));
+    CHECK_EQ(s.streams.size(), 1U);
+    CHECK_EQ(static_cast<int>(s.streams[0].channel.value_or(99)), 2);
+    CHECK_EQ(s.streams[0].patch.value_or(-1), 6); // the last one wins
+    CHECK_EQ(s.streams[0].volume.value_or(-1), 90);
+    CHECK_EQ(s.streams[0].pan.value_or(-1), 20);
+    CHECK_EQ(s.streams[0].events.size(), 1U);
+    CHECK_EQ(s.ppq, 120);
+}
+
 int main() { // NOLINT(bugprone-exception-escape): a throwing check is a failed test
     testMBT();
     testTempo();
     testTimecode();
     testWrkRoundTripOfNewSequence();
     testSmfRoundTrip();
+    testSmfImportRules();
     testLegacyFixture();
     testMalformedInput();
     return test::report("unit tests");
