@@ -61,6 +61,20 @@ Each layer is testable without the one above. The model has no I/O and no platfo
 | Devices: `SeqConfigMidi`, `SeqGetPortName`, `SeqWire`, `SeqSleep/Wake` | platform layer; port numbers in the model stay 0-based indices as in the file |
 | `TIMERTRAP`, `RXTRAP` | replaced by timestamped look-ahead scheduling on CoreMIDI (design note in §5) |
 
+### Not in TTSSEQ: application functions hosted in the library
+
+Two groups in libsseq have no counterpart among the engine's exports; in the original they live in
+the application (WCWLITE.EXE). They are kept in their own namespaces so the boundary stays visible:
+
+| libsseq | In the original | Why it is here |
+|---|---|---|
+| `sseq::display` (`display.hpp`): key names, duration text, event kind names, General MIDI names, Event-list columns | the Event list and Track/Measure views, the string table, PATCHES.INI | pure functions of the model, pinned down by Event-list screenshots; the same text is needed by every view and platform |
+| `sseq::edit` (planned): Quantize, Length, Transpose, Slide, Controller fill, Interpolate, cut/copy/paste with the event filter | the Edit menu (`edit1.c`, `cv.c`, `evtfilt.c`); the engine offers only `SeqInsertRange`, `SeqDeleteRange`, `SeqDisplaceEarlier/Later`, `SeqTemporalSort`, `SeqRescaleTime` | pure data transformations whose exact arithmetic is established with Cakewalk Apprentice 1.04 oracles under Wine and tested here on Linux; reusable from any client |
+
+The device layer goes the other way: `SeqConfigMidi`, `SeqGetPortName`, the timer and the
+`midiIn`/`midiOut` calls are inside TTSSEQ, but in libsseq they belong to the application
+(`Clock`, `MidiSink`), because the library has to build without a platform MIDI API.
+
 ## 3. The model
 
 - `Tick` is a 64-bit signed integer. Files store 24-bit event times and 32-bit tempo/marker times.
