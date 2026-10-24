@@ -76,7 +76,7 @@ struct Timecode {
 
     [[nodiscard]] int nominalFps() const noexcept; // 24, 25, 30
     [[nodiscard]] bool dropFrame() const noexcept { return rate == FrameRate::Fps30Drop; }
-    [[nodiscard]] std::int64_t secondsToFrames(double seconds) const noexcept;
+    [[nodiscard]] std::int64_t secondsToFrames(double seconds) const noexcept; // nearest frame
     [[nodiscard]] double framesToSeconds(std::int64_t frames) const noexcept;
     [[nodiscard]] HMSF framesToHMSF(std::int64_t frames) const noexcept;
     [[nodiscard]] std::int64_t hmsfToFrames(const HMSF& t) const noexcept;

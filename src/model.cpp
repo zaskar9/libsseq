@@ -317,8 +317,9 @@ int Timecode::nominalFps() const noexcept {
 }
 
 std::int64_t Timecode::secondsToFrames(const double seconds) const noexcept {
+    // Nearest frame, halves up: Cakewalk's Event list shows 0.25 s at 30 fps as frame 08.
     const double fps = dropFrame() ? 30000.0 / 1001.0 : nominalFps();
-    return static_cast<std::int64_t>(std::floor(seconds * fps + 1e-9));
+    return static_cast<std::int64_t>(std::floor(seconds * fps + 0.5 + 1e-9));
 }
 
 double Timecode::framesToSeconds(const std::int64_t frames) const noexcept {

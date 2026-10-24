@@ -219,7 +219,7 @@ int toData(const std::vector<std::uint8_t>& bytes, sseq_data* out) {
 extern "C" {
 
 const char* sseq_version(void) {
-    return "0.3.0";
+    return "0.4.0";
 }
 
 const char* sseq_last_error(void) {
@@ -857,6 +857,59 @@ int sseq_parse_hmsf(const char* text, sseq_hmsf* out) {
     }
     *out = sseq_hmsf{h.hours, h.minutes, h.seconds, h.frames};
     return 1;
+}
+
+// ---------------------------------------------------------------- display text
+
+void sseq_key_name(const int key, char* buffer, const size_t size) {
+    copyString(sseq::display::keyName(key), buffer, size);
+}
+
+int sseq_parse_key_name(const char* text, int* key) {
+    int k = 0;
+    if (text == nullptr || key == nullptr || !sseq::display::parseKeyName(text, k)) {
+        return 0;
+    }
+    *key = k;
+    return 1;
+}
+
+void sseq_duration_text(const sseq_tick ticks, const int ppq, char* buffer, const size_t size) {
+    copyString(sseq::display::durationText(ticks, ppq), buffer, size);
+}
+
+int sseq_parse_duration_text(const char* text, const int ppq, sseq_tick* ticks) {
+    sseq::Tick t = 0;
+    if (text == nullptr || ticks == nullptr || !sseq::display::parseDurationText(text, ppq, t)) {
+        return 0;
+    }
+    *ticks = t;
+    return 1;
+}
+
+const char* sseq_event_kind_name(const sseq_event_kind kind) {
+    return sseq::display::kindName(static_cast<sseq::EventKind>(kind)).data();
+}
+
+const char* sseq_gm_program_name(const int program) {
+    return sseq::display::generalMidiProgramName(program).data();
+}
+
+const char* sseq_gm_percussion_name(const int key) {
+    return sseq::display::generalMidiPercussionName(key).data();
+}
+
+void sseq_event_channel_text(const sseq_event* event, char* buffer, const size_t size) {
+    copyString(sseq::display::channelText(fromC(*event)), buffer, size);
+}
+
+void sseq_event_values_text(const sseq_event* event, const uint8_t* payload, const size_t payload_size, const int ppq,
+                            char* buffer, const size_t size) {
+    sseq::Event e = fromC(*event);
+    if (payload != nullptr) {
+        e.payload.assign(payload, payload + payload_size);
+    }
+    copyString(sseq::display::valuesText(e, ppq), buffer, size);
 }
 
 // ---------------------------------------------------------------- sysex banks

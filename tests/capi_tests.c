@@ -319,9 +319,33 @@ static void test_transport_and_recorder(void) {
 
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
-    CHECK(strcmp(sseq_version(), "0.3.0") == 0);
+    CHECK(strcmp(sseq_version(), "0.4.0") == 0);
     CHECK(strcmp(sseq_last_error(), "") == 0);
     test_sequence_and_files(dir);
+    {
+        char text[64];
+        int key = 0;
+        sseq_tick ticks = 0;
+        sseq_key_name(56, text, sizeof text);
+        CHECK(strcmp(text, "G#4") == 0);
+        CHECK(sseq_parse_key_name("C 5", &key) && key == 60);
+        CHECK(!sseq_parse_key_name("H", &key));
+        sseq_duration_text(200, 120, text, sizeof text);
+        CHECK(strcmp(text, "1:080") == 0);
+        CHECK(sseq_parse_duration_text("1:080", 120, &ticks) && ticks == 200);
+        CHECK(strcmp(sseq_event_kind_name(SSEQ_EVENT_PITCH_WHEEL), "Wheel") == 0);
+        CHECK(strcmp(sseq_gm_program_name(20), "Reed Organ") == 0);
+        CHECK(strcmp(sseq_gm_program_name(200), "") == 0);
+        CHECK(strcmp(sseq_gm_percussion_name(42), "Closed Hi-Hat") == 0);
+        sseq_event e = note(0, 2, 60, 100, 240);
+        sseq_event_channel_text(&e, text, sizeof text);
+        CHECK(strcmp(text, "3") == 0);
+        sseq_event_values_text(&e, NULL, 0, 120, text, sizeof text);
+        CHECK(strcmp(text, "C 5  100  2:000") == 0);
+        e.kind = SSEQ_EVENT_TEXT;
+        sseq_event_values_text(&e, (const uint8_t*)"hi", 2, 120, text, sizeof text);
+        CHECK(strcmp(text, "hi") == 0);
+    }
     test_transport_and_recorder();
     printf("C API tests: %d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

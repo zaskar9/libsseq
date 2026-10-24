@@ -30,7 +30,7 @@ typedef struct sseq_sequence sseq_sequence;
 typedef struct sseq_transport sseq_transport;
 typedef struct sseq_recorder sseq_recorder;
 
-const char* sseq_version(void);
+const char* sseq_version(void); /* "0.4.0" */
 /* The message of the last failure on this thread ("" when there was none). */
 const char* sseq_last_error(void);
 
@@ -252,6 +252,21 @@ void sseq_format_mbt(const sseq_mbt* mbt, char* buffer, size_t size);
 int sseq_parse_mbt(const char* text, sseq_mbt* out);
 void sseq_format_hmsf(const sseq_hmsf* hmsf, char* buffer, size_t size);
 int sseq_parse_hmsf(const char* text, sseq_hmsf* out);
+
+/* ---------------------------------------------------------------- display text */
+
+/* Text forms as Cakewalk's views show them. Buffers get at most `size` bytes with the terminator. */
+void sseq_key_name(int key, char* buffer, size_t size);                       /* "C 5" = 60, "G#4" = 56 */
+int sseq_parse_key_name(const char* text, int* key);                          /* 0 when the text is not a key name */
+void sseq_duration_text(sseq_tick ticks, int ppq, char* buffer, size_t size); /* "50", "1:080" */
+int sseq_parse_duration_text(const char* text, int ppq, sseq_tick* ticks);
+const char* sseq_event_kind_name(sseq_event_kind kind); /* "Note", "KeyAft", "Contrl", ... */
+const char* sseq_gm_program_name(int program);          /* General MIDI level 1 names; "" outside 0..127 */
+const char* sseq_gm_percussion_name(int key);           /* channel 10 key names 35..81; "" otherwise */
+/* The Event list's Chn and Values columns ("3" or "n/a"; "C 5  100  1:080", "Reed Organ", ...). */
+void sseq_event_channel_text(const sseq_event* event, char* buffer, size_t size);
+void sseq_event_values_text(const sseq_event* event, const uint8_t* payload, size_t payload_size, int ppq, char* buffer,
+                            size_t size);
 
 /* ---------------------------------------------------------------- sysex banks */
 

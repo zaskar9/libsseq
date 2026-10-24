@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace test {
@@ -36,6 +37,9 @@ inline std::string str(const std::string& s) {
 }
 inline std::string str(const char* s) {
     return std::string("'") + s + "'";
+}
+inline std::string str(const std::string_view s) {
+    return "'" + std::string(s) + "'";
 }
 inline std::string str(bool b) {
     return b ? "true" : "false";

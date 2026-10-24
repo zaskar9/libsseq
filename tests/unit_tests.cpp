@@ -48,15 +48,17 @@ static void testTempo() {
     t.set(0, 18000); // 180 bpm: 3 beats/s, 360 ticks/s
     CHECK(std::abs(t.tickToSeconds(360) - 1.0) < 1e-9);
     CHECK_EQ(t.secondsToTick(1.0), 360);
-    // 4:4:117 at 180 bpm is 1917 ticks = 5.325 s = frame 159 at 30 fps (Cakewalk Apprentice 1.04 showed 00:00:05:10
-    // in a screenshot, but its two displays are not sampled at the same instant, so 09/10 is ambiguous).
+    // 4:4:117 at 180 bpm is 1917 ticks = 5.325 s = 159.75 frames at 30 fps; Cakewalk rounds to the nearest
+    // frame (00:00:05:10; its Event list shows 0.25 s as frame 08, 0.75 s as 23).
     MeterMap m;
     m.ppq = 120;
     Tick now = m.mbtToTick(MBT{4, 4, 117});
     CHECK_EQ(now, 1917);
     Timecode tc;
     tc.rate = FrameRate::Fps30;
-    CHECK_EQ(tc.secondsToFrames(t.tickToSeconds(now)), 159);
+    CHECK_EQ(tc.secondsToFrames(t.tickToSeconds(now)), 160);
+    CHECK_EQ(tc.secondsToFrames(0.25), 8);
+    CHECK_EQ(tc.secondsToFrames(0.75), 23);
     CHECK_EQ(formatHMSF(tc.framesToHMSF(tc.secondsToFrames(t.tickToSeconds(1800)))), "00:00:05:00");
     // Tempo change: 120 bpm for the first 480 ticks (2 s), then 60 bpm (1 tick = 1/120 s).
     t.set(0, 12000);
@@ -341,6 +343,60 @@ static void testSmfImportRules() {
     CHECK_EQ(s.ppq, 120);
 }
 
+/// Text forms as Cakewalk's Event list shows them (observed in Cakewalk Apprentice 1.04).
+static void testDisplay() {
+    using namespace display;
+    CHECK_EQ(keyName(60), "C 5");
+    CHECK_EQ(keyName(0), "C 0");
+    CHECK_EQ(keyName(127), "G 10");
+    CHECK_EQ(keyName(56), "G#4");
+    CHECK_EQ(keyName(48), "C 4");
+    int key = -1;
+    CHECK(parseKeyName("C 5", key));
+    CHECK_EQ(key, 60);
+    CHECK(parseKeyName("G#4", key));
+    CHECK_EQ(key, 56);
+    CHECK(parseKeyName("g10", key));
+    CHECK_EQ(key, 127);
+    CHECK(parseKeyName("Bb3", key));
+    CHECK_EQ(key, 46);
+    CHECK(!parseKeyName("H2", key));
+    CHECK(!parseKeyName("C 11", key));
+    CHECK_EQ(durationText(50, 120), "50");
+    CHECK_EQ(durationText(108, 120), "108"); // less than a quarter note, whatever the meter
+    CHECK_EQ(durationText(120, 120), "1:000");
+    CHECK_EQ(durationText(200, 120), "1:080");
+    CHECK_EQ(durationText(65535, 120), "546:015");
+    Tick ticks = 0;
+    CHECK(parseDurationText("1:080", 120, ticks));
+    CHECK_EQ(ticks, 200);
+    CHECK(parseDurationText("50", 120, ticks));
+    CHECK_EQ(ticks, 50);
+    CHECK(!parseDurationText("x", 120, ticks));
+    CHECK_EQ(kindName(EventKind::KeyAftertouch), "KeyAft");
+    CHECK_EQ(kindName(EventKind::Controller), "Contrl");
+    CHECK_EQ(kindName(EventKind::PitchWheel), "Wheel");
+    CHECK_EQ(kindName(EventKind::Sysex), "Sysx");
+    CHECK_EQ(kindName(EventKind::MciCommand), "MCICmd");
+    CHECK_EQ(generalMidiProgramName(0), "Acoustic Grand Piano");
+    CHECK_EQ(generalMidiProgramName(20), "Reed Organ");
+    CHECK_EQ(generalMidiProgramName(127), "Gunshot");
+    CHECK_EQ(generalMidiProgramName(128), "");
+    CHECK_EQ(generalMidiPercussionName(42), "Closed Hi-Hat");
+    CHECK_EQ(generalMidiPercussionName(34), "");
+    CHECK_EQ(valuesText(Event::note(0, 2, 60, 100, 240), 120), "C 5  100  2:000");
+    CHECK_EQ(valuesText(Event::controller(0, 2, 7, 100), 120), "7  100");
+    CHECK_EQ(valuesText(Event::patch(0, 2, 20), 120), "Reed Organ");
+    CHECK_EQ(valuesText(Event::pitchWheel(0, 2, -8192), 120), "-8192");
+    CHECK_EQ(valuesText(Event::keyAftertouch(0, 2, 60, 80), 120), "C 5  80");
+    CHECK_EQ(valuesText(Event::channelAftertouch(0, 2, 90), 120), "90");
+    CHECK_EQ(valuesText(Event::sysex(0, 3), 120), "3");
+    CHECK_EQ(valuesText(Event::textEvent(0, "text at start"), 120), "text at start");
+    CHECK_EQ(channelText(Event::note(0, 2, 60, 100, 240)), "3");
+    CHECK_EQ(channelText(Event::sysex(0, 0)), "n/a");
+    CHECK_EQ(channelText(Event::textEvent(0, "x")), "n/a");
+}
+
 int main() { // NOLINT(bugprone-exception-escape): a throwing check is a failed test
     testMBT();
     testTempo();
@@ -348,6 +404,7 @@ int main() { // NOLINT(bugprone-exception-escape): a throwing check is a failed 
     testWrkRoundTripOfNewSequence();
     testSmfRoundTrip();
     testSmfImportRules();
+    testDisplay();
     testLegacyFixture();
     testMalformedInput();
     return test::report("unit tests");

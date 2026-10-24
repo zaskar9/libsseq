@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(libsseq VERSION 0.3.0 LANGUAGES C CXX)
+project(libsseq VERSION 0.4.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,6 +15,7 @@ add_library(sseq
     src/engine.cpp
     src/recorder.cpp
     src/capi.cpp
+    src/display.cpp
 )
 target_include_directories(sseq PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

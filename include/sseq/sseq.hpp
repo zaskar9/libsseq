@@ -1,6 +1,7 @@
 // libsseq umbrella header.
 #pragma once
 
+#include "display.hpp"
 #include "engine.hpp"
 #include "event.hpp"
 #include "maps.hpp"
@@ -12,5 +13,5 @@
 
 namespace sseq {
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 3;
+inline constexpr int kVersionMinor = 4;
 } // namespace sseq

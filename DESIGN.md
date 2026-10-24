@@ -30,6 +30,7 @@ markers, every non-empty stream becomes one track).
 |---|---|---|---|
 | Model | `sseq::Sequence`, `Stream`, `Event`, `TempoMap`, `MeterMap`, `Timecode`, `Marker`, `SysxBank` (`sequence.hpp`, `maps.hpp`, `event.hpp`, `model.cpp`) | nothing | v0.1 |
 | Formats | `sseq::wrk` (`wrk.hpp/.cpp`), `sseq::smf` (`smf.hpp/.cpp`) | Model | v0.1 |
+| Display | `sseq::display` (`display.hpp/.cpp`): key names, durations, kind names, General MIDI names, Event-list text | Model | v0.4 |
 | Engine | `sseq::engine` (`engine.hpp/.cpp`, `recorder.hpp/.cpp`): `Transport`, `Recorder`, `render`, `MidiSink` / `Clock` interfaces | Model | v0.2, v0.3 |
 | C API | `sseq.h` / `capi.cpp`: flat C interface over everything above, for Swift | all | v0.3 |
 | Swift package | `Package.swift`: the C API as module `SSeq` | C API | v0.3 |
@@ -105,6 +106,16 @@ Two details found while matching Cakewalk's SMF output byte for byte:
 Not yet covered: the payload of Wave events (never produced in the observed sessions), chunk 25
 (a Cakewalk Professional Faders-view state; preserved verbatim), later format versions (chunks 36, 44,
 45, 49, 55, 74 and others; preserved verbatim, not interpreted), sysex bank files, `.MFF`.
+
+## 4a. Display text (v0.4)
+
+`display.hpp` holds the text forms Cakewalk's views use, observed in Cakewalk Apprentice 1.04's
+Event list: key names with C 5 = 60 (`C 5`, `G#4`, `G 10`), note durations as plain ticks below one
+quarter note and `quarters:ticks` above (`1:080`; the unit is the PPQ quarter, not the meter beat),
+the kind names (`Note`, `KeyAft`, `ChanAft`, `Contrl`, `Patch`, `Wheel`, `Sysx`, `Text`, `MCICmd`,
+`Wave`), the Chn column (`n/a` for sysex and string events) and the Values column per kind. Patch
+names come from the General MIDI level 1 list in the MIDI specification, not from Cakewalk's
+PATCHES.INI. SMPTE display rounds to the nearest frame, as the Event list does.
 
 ## 5. Engine (v0.2)
 
