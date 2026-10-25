@@ -26,6 +26,7 @@ typedef struct {
     size_t count;
     int flushes;
     int strings;
+    int discards;
 } Fake;
 
 static double fake_now(void* ctx) {
@@ -49,6 +50,10 @@ static void fake_sysex(void* ctx, double time, int port, const uint8_t* bytes, s
 
 static void fake_flush(void* ctx) {
     ((Fake*)ctx)->flushes++;
+}
+
+static void fake_discard(void* ctx) {
+    ((Fake*)ctx)->discards++;
 }
 
 static void fake_string(void* ctx, int stream, const sseq_event* e, const uint8_t* payload, size_t size, double time) {
@@ -247,7 +252,7 @@ static void test_transport_and_recorder(void) {
     /* Transport with callbacks. */
     Fake fake;
     memset(&fake, 0, sizeof fake);
-    sseq_transport_callbacks cb = {&fake, fake_now, fake_send, fake_sysex, fake_flush, fake_string};
+    sseq_transport_callbacks cb = {&fake, fake_now, fake_send, fake_sysex, fake_flush, fake_string, fake_discard};
     sseq_playback_options_default(&o);
     o.send_stream_parameters = 0;
     o.look_ahead = 0.05;
@@ -280,6 +285,7 @@ static void test_transport_and_recorder(void) {
     CHECK(fake.count == 4);
     sseq_transport_rewind(tr);
     CHECK(sseq_transport_now(tr) == 0);
+    CHECK(fake.discards == 0); /* the transport ended by itself: nothing pending to discard */
 
     /* Recording into the sequence: play from 10.0 s, record two notes, keep the take. */
     sseq_record_options ro;
@@ -305,6 +311,7 @@ static void test_transport_and_recorder(void) {
     sseq_transport_pump(tr);
     sseq_recorder_finish(rec, 11.0);
     sseq_transport_stop(tr);
+    CHECK(fake.discards == 1); /* a stop while playing discards what was scheduled ahead */
     CHECK(sseq_recorder_count(rec) == 2);
     CHECK(sseq_recorder_event(rec, 0, &e) && e.time == 0 && e.data1 == 67 && e.duration == 120);
     CHECK(sseq_recorder_event(rec, 1, &e) && e.time == 120 && e.data1 == 69 && e.duration == 120);
@@ -319,7 +326,7 @@ static void test_transport_and_recorder(void) {
 
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
-    CHECK(strcmp(sseq_version(), "0.4.0") == 0);
+    CHECK(strcmp(sseq_version(), "0.4.1") == 0);
     CHECK(strcmp(sseq_last_error(), "") == 0);
     test_sequence_and_files(dir);
     {

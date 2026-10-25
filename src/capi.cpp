@@ -219,7 +219,7 @@ int toData(const std::vector<std::uint8_t>& bytes, sseq_data* out) {
 extern "C" {
 
 const char* sseq_version(void) {
-    return "0.4.0";
+    return "0.4.1";
 }
 
 const char* sseq_last_error(void) {
@@ -1002,6 +1002,11 @@ public:
     void flush() override {
         if (cb_.flush != nullptr) {
             cb_.flush(cb_.context);
+        }
+    }
+    void discardScheduled() override {
+        if (cb_.discard_scheduled != nullptr) {
+            cb_.discard_scheduled(cb_.context);
         }
     }
 

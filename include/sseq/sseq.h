@@ -319,6 +319,9 @@ typedef struct {
     void (*flush)(void* context);
     void (*string_event)(void* context, int stream_number, const sseq_event* event, const uint8_t* payload,
                          size_t payload_size, double time);
+    /* Optional: drop messages already handed over whose time is still in the future (called before the
+     * transport silences its notes on stop, seek and panic). */
+    void (*discard_scheduled)(void* context);
 } sseq_transport_callbacks;
 
 /* The sequence must outlive the transport and must not be modified while the transport plays. The

@@ -597,6 +597,7 @@ void Transport::stop() {
     }
     impl_->playing = false;
     impl_->countInClicks.clear();
+    impl_->sink->discardScheduled(); // pending future note-ons would outlive the note-offs below
     impl_->silence(t);
     if (impl_->options.zeroControllersOnStop) {
         impl_->zeroAll(t, false);
@@ -621,6 +622,7 @@ void Transport::seek(const Tick tick) {
         return;
     }
     const double t = impl_->clock->now();
+    impl_->sink->discardScheduled();
     impl_->silence(t);
     impl_->start(std::max<Tick>(0, tick), t, false);
     pump();

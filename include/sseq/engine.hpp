@@ -49,6 +49,11 @@ public:
     virtual void sendSysex(double time, int port, const std::vector<std::uint8_t>& bytes) = 0;
     /// Called at the end of every pump() so batched implementations can hand their packets over.
     virtual void flush() {}
+    /// Called before the transport silences its notes on stop, seek and panic: messages already
+    /// handed over with a time still in the future must not be delivered (CoreMIDI:
+    /// MIDIFlushOutput). Otherwise a note-on scheduled up to the look-ahead ahead would sound
+    /// after the note-offs and never end.
+    virtual void discardScheduled() {}
 };
 
 /// Monotonic time in seconds.

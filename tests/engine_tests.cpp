@@ -33,11 +33,18 @@ public:
     std::vector<MidiMessage> messages;
     std::vector<SysexRecord> sysex;
     int flushes = 0;
+    int discards = 0;
     void send(const MidiMessage& m) override { messages.push_back(m); }
     void sendSysex(const double time, const int port, const std::vector<std::uint8_t>& bytes) override {
         sysex.push_back({time, port, bytes});
     }
     void flush() override { ++flushes; }
+    /// Drops messages whose time is still ahead, as a real output does on discardScheduled().
+    void discardScheduled() override {
+        ++discards;
+        std::erase_if(messages, [&](const MidiMessage& m) { return m.time > now; });
+    }
+    double now = 0; // the test sets this to the clock before stopping
 };
 
 bool near(const double a, const double b) {
@@ -194,7 +201,9 @@ void testStopCutsNotesAndZeroesControllers() {
     clock.time = 0.2; // inside the first note
     tr.pump();
     CHECK_EQ(sink.messages.size(), 1U);
+    sink.now = 0.2;
     tr.stop();
+    CHECK_EQ(sink.discards, 1); // pending future messages are dropped before the note-offs
     CHECK(!tr.playing());
     CHECK_EQ(tr.now(), 48); // 0.2 s = 48 ticks
     // note-off at 0.2, then on all 16 channels of the one port in use: sustain up, pitch wheel
@@ -225,6 +234,36 @@ void testStopCutsNotesAndZeroesControllers() {
     CHECK_EQ(sink.messages.size(), 16U * 5U);
     CHECK_EQ(hex(sink.messages[0]), "b0 7b 00");
     CHECK_EQ(hex(sink.messages[1]), "b0 40 00");
+}
+
+/// Stopping while a note-on is already scheduled ahead (within the look-ahead): the output is told
+/// to discard what is pending, and the note-offs are sent for sounding notes, so nothing hangs.
+void testStopDiscardsScheduledNotes() {
+    const Sequence s = simpleSequence(); // notes at 0, 120, 240 ticks = 0, 0.5, 1.0 s
+    FakeClock clock;
+    RecordingSink sink;
+    PlaybackOptions o;
+    o.sendStreamParameters = false;
+    o.lookAhead = 0.2;
+    Transport tr(s, clock, sink, o);
+    tr.play();
+    clock.time = 0.35; // horizon 0.55: the second note-on (0.5) is scheduled although not yet due
+    tr.pump();
+    CHECK_EQ(sink.messages.size(), 3U); // on(0), off(0.5), on(0.5)
+    sink.now = 0.35;
+    tr.stop();
+    CHECK_EQ(sink.discards, 1);
+    // What the output still holds: the first note-on and the note-offs the stop sent at 0.35, for
+    // both notes the transport considered sounding; no note-on with a time after the stop.
+    bool futureOn = false;
+    for (const MidiMessage& m : sink.messages) {
+        if (m.isNoteOn() && m.time > 0.35) {
+            futureOn = true;
+        }
+    }
+    CHECK(!futureOn);
+    CHECK(sink.messages.back().isNoteOff());
+    CHECK(near(sink.messages.back().time, 0.35));
 }
 
 void testSeekAndChase() {
@@ -589,6 +628,7 @@ int main() {
     testMuteAndSolo();
     testLookAheadAndPump();
     testStopCutsNotesAndZeroesControllers();
+    testStopDiscardsScheduledNotes();
     testSeekAndChase();
     testTempoChangeAndRatio();
     testLoop();
