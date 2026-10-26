@@ -69,7 +69,7 @@ the application (WCWLITE.EXE). They are kept in their own namespaces so the boun
 | libsseq | In the original | Why it is here |
 |---|---|---|
 | `sseq::display` (`display.hpp`): key names, duration text, event kind names, General MIDI names, Event-list columns | the Event list and Track/Measure views, the string table, PATCHES.INI | pure functions of the model, pinned down by Event-list screenshots; the same text is needed by every view and platform |
-| `sseq::edit` (`edit.hpp`, v0.5/0.6): Quantize, Length, Transpose, Slide, Controller fill; planned: cut/copy/paste with the event filter | the Edit menu (`edit1.c`, `cv.c`, `evtfilt.c`); the engine offers only `SeqInsertRange`, `SeqDeleteRange`, `SeqDisplaceEarlier/Later`, `SeqTemporalSort`, `SeqRescaleTime` | pure data transformations whose exact arithmetic is established with Cakewalk Apprentice 1.04 oracles under Wine and tested here on Linux; reusable from any client |
+| `sseq::edit` (`edit.hpp`, v0.5 to 0.7): Quantize, Length, Transpose, Slide, Controller fill, the event filter, Cut/Copy/Paste with a clipboard, one-level Undo | the Edit menu (`edit1.c`, `cv.c`, `evtfilt.c`); the engine offers only `SeqInsertRange`, `SeqDeleteRange`, `SeqDisplaceEarlier/Later`, `SeqTemporalSort`, `SeqRescaleTime` | pure data transformations whose exact arithmetic is established with Cakewalk Apprentice 1.04 oracles under Wine and tested here on Linux; reusable from any client |
 
 The device layer goes the other way: `SeqConfigMidi`, `SeqGetPortName`, the timer and the
 `midiIn`/`midiOut` calls are inside TTSSEQ, but in libsseq they belong to the application
@@ -139,7 +139,7 @@ the kind names (`Note`, `KeyAft`, `ChanAft`, `Contrl`, `Patch`, `Wheel`, `Sysx`,
 names come from the General MIDI level 1 list in the MIDI specification, not from Cakewalk's
 PATCHES.INI. SMPTE display rounds to the nearest frame, as the Event list does.
 
-## 4b. Editing (v0.5, v0.6)
+## 4b. Editing (v0.5 to v0.7)
 
 `sseq::edit` holds the Edit menu's commands as pure transformations of a `Sequence`. Each takes a
 `Selection` (stream numbers and a From..Thru range; an event is selected by its start time, both
@@ -196,6 +196,28 @@ no 19, ...), 50..60 over 30 ticks gives 11 events three ticks apart, and -8192..
 ticks gives one wheel event per tick. New events go before existing ones on the same tick.
 Cakewalk writes 1 into the unused duration field of the events it inserts (as its MIDI import
 does); libsseq writes 0 and the comparison ignores the field.
+
+Cut, Copy, Paste (v0.7): the `Clipboard` holds the region's events per source stream with times
+relative to From, its tempo entries, and, for a region of whole measures (From starts one, Thru
+ends one; the dialog greys the box otherwise), the meter and key per measure, entry 0 restating
+the state at From. Its `length` is Thru - From + 1, which is also the step between repetitions.
+Copy takes events by start time (a note crossing into the region is not taken, one crossing out
+keeps its duration). Paste puts each repetition's events on their source streams (or the one
+stream of Paste to One track) at To + offset; the destination range is `To .. To + length *
+repetitions - 1` on the affected streams (the selected ones, or the destination of Paste to One
+track): Replace removes its events and tempo entries first, Slide over moves everything from To
+on later by the span (the tempo and meter/key maps too when they are pasted), Blend does nothing.
+Cakewalk allows "Tempo changes" with Replace and Slide over only. Pasted meter/key entries go to
+the measure of To onward and replace what is there. Cut is Copy plus removal; with "Delete hole"
+the selected streams' later events, and the maps when cut, move earlier by the length (Cakewalk
+Apprentice 1.04 moves the tempo map by one tick less; libsseq moves it by the length). The
+clipboard converts to a sequence (`toSequence`) for the Standard MIDI File image Cakewalk shares
+with other applications, and back (`fromSequence`).
+
+Undo (v0.7): `Undo` keeps the sequence as it was before the last command and swaps it back on
+`apply()`; a second `apply()` redoes, and `label()` is the menu text ("Undo Quantize", "Redo
+Quantize"). One level, as in Cakewalk. The C API does the same with `sseq_sequence_copy` and
+`sseq_sequence_swap`.
 
 ## 5. Engine (v0.2)
 

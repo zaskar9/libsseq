@@ -529,6 +529,289 @@ void testEventFilterOracles(const fs::path& data) {
     }
 }
 
+// Cut/Copy/Paste oracles on CLIP.WRK. `run` performs the same commands on our copy; `sel` is
+// Select All unless the case deselects a track. Tempo and meter/key maps are compared too.
+struct ClipCase {
+    const char* file;
+    std::vector<int> streams; // selected streams (numbers); empty = all
+    void (*run)(Sequence&, const edit::Selection&);
+};
+
+edit::Selection region(const edit::Selection& all, const Tick from, const Tick thru) {
+    edit::Selection s = all;
+    s.from = from;
+    s.thru = thru;
+    return s;
+}
+
+edit::PasteOptions pasteAt(const edit::Selection& sel, const Tick to, const int reps, const edit::PasteMode mode) {
+    edit::PasteOptions o;
+    o.to = to;
+    o.repetitions = reps;
+    o.mode = mode;
+    o.streams = sel.streams;
+    return o;
+}
+
+const std::vector<ClipCase> clipCases{
+    {"CLIP_P1",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::paste(s, edit::copy(s, region(a, 480, 960), {}), pasteAt(a, 3600, 1, edit::PasteMode::Blend));
+     }},
+    {"CLIP_P3R",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::paste(s, edit::copy(s, region(a, 480, 960), {}), pasteAt(a, 3600, 3, edit::PasteMode::Blend));
+     }},
+    {"CLIP_PBLEND",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::paste(s, edit::copy(s, region(a, 480, 960), {}), pasteAt(a, 480, 1, edit::PasteMode::Blend));
+     }},
+    {"CLIP_PREPL",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::paste(s, edit::copy(s, region(a, 480, 960), {}), pasteAt(a, 960, 1, edit::PasteMode::Replace));
+     }},
+    {"CLIP_PREPL2",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::paste(s, edit::copy(s, region(a, 480, 960), {}), pasteAt(a, 960, 2, edit::PasteMode::Replace));
+     }},
+    {"CLIP_PSLIDE",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::paste(s, edit::copy(s, region(a, 480, 960), {}), pasteAt(a, 480, 1, edit::PasteMode::SlideOver));
+     }},
+    {"CLIP_PSLIDE2",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::paste(s, edit::copy(s, region(a, 480, 960), {}), pasteAt(a, 960, 2, edit::PasteMode::SlideOver));
+     }},
+    {"CLIP_CUT", {}, [](Sequence& s, const edit::Selection& a) { edit::cut(s, region(a, 480, 960), {}); }},
+    {"CLIP_CUTH",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::CutOptions o;
+         o.deleteHole = true;
+         edit::cut(s, region(a, 480, 960), o);
+     }},
+    {"CLIP_PTEMPO",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::CopyOptions c;
+         c.tempo = true;
+         edit::PasteOptions o = pasteAt(a, 3600, 1, edit::PasteMode::Replace);
+         o.tempo = true;
+         edit::paste(s, edit::copy(s, region(a, 480, 960), c), o);
+     }},
+    {"CLIP_PREPLT",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::CopyOptions c;
+         c.tempo = true;
+         edit::PasteOptions o = pasteAt(a, 960, 1, edit::PasteMode::Replace);
+         o.tempo = true;
+         edit::paste(s, edit::copy(s, region(a, 480, 960), c), o);
+     }},
+    {"CLIP_PSLTEMP",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::CopyOptions c;
+         c.tempo = true;
+         edit::PasteOptions o = pasteAt(a, 480, 1, edit::PasteMode::SlideOver);
+         o.tempo = true;
+         edit::paste(s, edit::copy(s, region(a, 480, 960), c), o);
+     }},
+    {"CLIP_PMAPS",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::CopyOptions c;
+         c.tempo = true;
+         c.meterKey = true;
+         edit::PasteOptions o = pasteAt(a, 3600, 1, edit::PasteMode::Replace);
+         o.tempo = true;
+         o.meterKey = true;
+         edit::paste(s, edit::copy(s, region(a, 480, 1439), c), o); // measures 2 and 3
+     }},
+    {"CLIP_CUTMAPS",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::CutOptions o;
+         o.deleteHole = true;
+         o.tempo = true;
+         o.meterKey = true;
+         edit::cut(s, region(a, 480, 1439), o);
+     }},
+    {"CLIP_PONE",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::PasteOptions o = pasteAt(a, 3600, 1, edit::PasteMode::Blend);
+         o.toStream = 2;
+         edit::paste(s, edit::copy(s, region(a, 480, 960), {}), o);
+     }},
+    {"CLIP_PONE2",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::PasteOptions o = pasteAt(a, 3600, 2, edit::PasteMode::Blend);
+         o.toStream = 2;
+         edit::paste(s, edit::copy(s, region(a, 480, 960), {}), o);
+     }},
+    {"CLIP_PONER",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::PasteOptions o = pasteAt(a, 3600, 1, edit::PasteMode::Replace);
+         o.toStream = 2;
+         edit::paste(s, edit::copy(s, region(a, 480, 960), {}), o);
+     }},
+    {"CLIP_PONES",
+     {},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::PasteOptions o = pasteAt(a, 480, 1, edit::PasteMode::SlideOver);
+         o.toStream = 2;
+         edit::paste(s, edit::copy(s, region(a, 480, 960), {}), o);
+     }},
+    {"CLIP_PREPLSEL",
+     {0, 2},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::paste(s, edit::copy(s, region(a, 480, 960), {}), pasteAt(a, 3600, 1, edit::PasteMode::Replace));
+     }},
+    {"CLIP_PSLSEL",
+     {0, 2},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::paste(s, edit::copy(s, region(a, 480, 960), {}), pasteAt(a, 480, 1, edit::PasteMode::SlideOver));
+     }},
+    {"CLIP_CUTHSEL",
+     {0, 2},
+     [](Sequence& s, const edit::Selection& a) {
+         edit::CutOptions o;
+         o.deleteHole = true;
+         edit::cut(s, region(a, 480, 960), o);
+     }},
+};
+
+void checkSameMaps(const Sequence& ours, const Sequence& theirs, const std::string& what) {
+    CHECK_EQ(ours.tempoMap.entries.size(), theirs.tempoMap.entries.size());
+    for (std::size_t i = 0; i < ours.tempoMap.entries.size() && i < theirs.tempoMap.entries.size(); ++i) {
+        const TempoEntry& x = ours.tempoMap.entries[i];
+        const TempoEntry& y = theirs.tempoMap.entries[i];
+        ++test::checks;
+        if (x.time != y.time || x.bpm100 != y.bpm100) {
+            ++test::failures;
+            std::printf("FAIL %s: tempo entry %zu: ours %lld/%d, Cakewalk %lld/%d\n", what.c_str(), i,
+                        static_cast<long long>(x.time), x.bpm100, static_cast<long long>(y.time), y.bpm100);
+        }
+    }
+    for (int m = 1; m <= 14; ++m) {
+        const MeterEntry& a = ours.meterMap.atMeasure(m);
+        const MeterEntry& b = theirs.meterMap.atMeasure(m);
+        ++test::checks;
+        if (a.numerator != b.numerator || a.denominatorLog2 != b.denominatorLog2 ||
+            alterationsAt(ours, ours.meterMap.measureStart(m)) !=
+                alterationsAt(theirs, theirs.meterMap.measureStart(m))) {
+            ++test::failures;
+            std::printf("FAIL %s: measure %d: ours %d/%d key %d, Cakewalk %d/%d key %d\n", what.c_str(), m, a.numerator,
+                        1 << a.denominatorLog2, alterationsAt(ours, ours.meterMap.measureStart(m)), b.numerator,
+                        1 << b.denominatorLog2, alterationsAt(theirs, theirs.meterMap.measureStart(m)));
+        }
+    }
+}
+
+void testClipboard() {
+    Sequence s;
+    Stream& t = s.stream(0);
+    t.events.push_back(Event::note(100, 0, 60, 100, 50));
+    t.events.push_back(Event::note(200, 0, 62, 100, 50));
+    t.events.push_back(Event::note(300, 0, 64, 100, 50));
+    edit::Selection sel;
+    sel.streams = {0};
+    sel.from = 150;
+    sel.thru = 250;
+    const edit::Clipboard clip = edit::copy(s, sel, {});
+    CHECK_EQ(clip.length, 101);
+    CHECK_EQ(clip.tracks.size(), std::size_t{1});
+    CHECK_EQ(clip.tracks[0].events.size(), std::size_t{1});
+    CHECK_EQ(clip.tracks[0].events[0].time, 50); // relative to From
+    CHECK(clip.tempo.empty() && clip.meterKey.empty());
+    // Whole measures are required for meter and key.
+    edit::CopyOptions mk;
+    mk.meterKey = true;
+    CHECK_EQ(edit::copy(s, sel, mk).measures, 0);
+    CHECK_EQ(edit::copy(s, region(sel, 480, 1439), mk).measures, 2);
+    CHECK_EQ(edit::copy(s, region(sel, 480, 1439), mk).meterKey.size(), std::size_t{1}); // the state at From only
+    // Paste to one track at 1000 twice, then cut with a hole.
+    edit::PasteOptions po = pasteAt(sel, 1000, 2, edit::PasteMode::Blend);
+    po.toStream = 1;
+    CHECK_EQ(edit::paste(s, clip, po), 2);
+    CHECK_EQ(s.stream(1).events[0].time, 1050);
+    CHECK_EQ(s.stream(1).events[1].time, 1151);
+    edit::CutOptions co;
+    co.deleteHole = true;
+    sel.streams = {0, 1};
+    edit::cut(s, region(sel, 1000, 1100), co);
+    CHECK_EQ(s.stream(1).events.size(), std::size_t{1});
+    CHECK_EQ(s.stream(1).events[0].time, 1050); // 1151 - 101
+    // Replace clears the range on the affected streams only: stream 0 keeps its note at 100 and
+    // receives the pasted one (the clipboard's source stream), stream 1 is cleared in 100..200.
+    edit::PasteOptions rp = pasteAt(sel, 100, 1, edit::PasteMode::Replace);
+    rp.streams = {1};
+    CHECK_EQ(edit::paste(s, clip, rp), 1);
+    CHECK_EQ(s.stream(0).events.size(), std::size_t{4});
+    CHECK_EQ(s.stream(0).events[0].time, 100);
+    CHECK_EQ(s.stream(0).events[1].time, 150);
+    CHECK_EQ(s.stream(1).events.size(), std::size_t{1}); // its note at 1050 is outside the range
+}
+
+void testClipboardOracles(const fs::path& data) {
+    const Sequence source = wrk::readFile((data / "src" / "CLIP.WRK").string());
+    for (const ClipCase& c : clipCases) {
+        const fs::path oracle = data / "edit" / (std::string(c.file) + ".WRK");
+        if (!fs::exists(oracle)) {
+            std::printf("  (no oracle %s)\n", oracle.string().c_str());
+            continue;
+        }
+        Sequence ours = source;
+        edit::Selection sel = edit::Selection::all(ours);
+        if (!c.streams.empty()) {
+            sel.streams = c.streams;
+        }
+        c.run(ours, sel);
+        const Sequence theirs = wrk::readFile(oracle.string());
+        checkSameEvents(ours, theirs, c.file);
+        if (std::string(c.file) == "CLIP_CUTMAPS") {
+            // Cakewalk moves the tempo map by one tick less than the events (1440 -> 481); we move
+            // both by the hole's length (1440 -> 480).
+            CHECK_EQ(ours.tempoMap.entries.size(), std::size_t{2});
+            CHECK_EQ(ours.tempoMap.entries[1].time, 480);
+            CHECK_EQ(theirs.tempoMap.entries[1].time, 481);
+        } else {
+            checkSameMaps(ours, theirs, c.file);
+        }
+    }
+}
+
+void testUndo() {
+    Sequence s;
+    s.stream(0).events.push_back(Event::note(29, 0, 60, 100, 10));
+    edit::Undo undo;
+    CHECK(!undo.available());
+    CHECK_EQ(undo.label(), std::string("Undo"));
+    CHECK(!undo.apply(s));
+    undo.before(s, "Quantize");
+    edit::quantize(s, edit::Selection::all(s), {});
+    CHECK_EQ(s.stream(0).events[0].time, 30);
+    CHECK_EQ(undo.label(), std::string("Undo Quantize"));
+    CHECK(undo.apply(s));
+    CHECK_EQ(s.stream(0).events[0].time, 29);
+    CHECK_EQ(undo.label(), std::string("Redo Quantize"));
+    CHECK(undo.apply(s));
+    CHECK_EQ(s.stream(0).events[0].time, 30);
+    CHECK_EQ(undo.label(), std::string("Undo Quantize"));
+    undo.clear();
+    CHECK(!undo.available());
+}
+
 void testQuantizeOracles(const fs::path& data) {
     const Sequence source = wrk::readFile((data / "src" / "QUANT.WRK").string());
     for (const QuantizeCase& c : quantizeCases) {
@@ -573,6 +856,9 @@ int main(int argc, char** argv) {
     testControllerFillOracles(argv[1]);
     testEventFilter();
     testEventFilterOracles(argv[1]);
+    testClipboard();
+    testClipboardOracles(argv[1]);
+    testUndo();
     std::printf("%d checks, %d failures\n", test::checks, test::failures);
     return test::failures == 0 ? 0 : 1;
 }

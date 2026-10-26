@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdlib>
 #include <iterator>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -354,6 +355,330 @@ int controllerFill(Stream& stream, const ControllerFillOptions& options) {
     merged.insert(merged.end(), std::make_move_iterator(existing), std::make_move_iterator(stream.events.end()));
     stream.events = std::move(merged);
     return static_cast<int>(fill.size());
+}
+
+// ---------------------------------------------------------------- Cut, Copy, Paste
+
+namespace {
+
+bool selected(const Selection& sel, const int streamNumber) {
+    return std::ranges::find(sel.streams, streamNumber) != sel.streams.end();
+}
+
+/// The key signature in force at a measure.
+int alterationsAt(const Sequence& s, const int measure) {
+    int a = 0;
+    for (const KeyEntry& k : s.keyMap) {
+        if (k.measure <= measure) {
+            a = k.alterations;
+        }
+    }
+    return a;
+}
+
+/// Whether From..Thru covers whole measures: From starts one and Thru is the last tick of one.
+bool wholeMeasures(const Sequence& s, const Tick from, const Tick thru) {
+    const MeterMap& m = s.meterMap;
+    return m.measureStart(m.measureAt(from)) == from && m.measureStart(m.measureAt(thru + 1)) == thru + 1;
+}
+
+void shiftEvents(Stream& t, const Tick fromTime, const Tick by) {
+    bool moved = false;
+    for (Event& e : t.events) {
+        if (e.time >= fromTime) {
+            e.time += by;
+            moved = true;
+        }
+    }
+    if (moved) {
+        sortEvents(t.events);
+    }
+}
+
+void shiftTempo(TempoMap& map, const Tick fromTime, const Tick by) {
+    for (TempoEntry& e : map.entries) {
+        if (e.time >= fromTime && e.time > 0) {
+            e.time += by;
+        }
+    }
+    std::ranges::stable_sort(map.entries, {}, &TempoEntry::time);
+}
+
+void shiftMeterKey(Sequence& s, const int fromMeasure, const int by) {
+    for (MeterEntry& m : s.meterMap.entries) {
+        if (m.measure >= fromMeasure && m.measure > 1) {
+            m.measure += by;
+        }
+    }
+    for (KeyEntry& k : s.keyMap) {
+        if (k.measure >= fromMeasure && k.measure > 1) {
+            k.measure += by;
+        }
+    }
+    std::ranges::stable_sort(s.meterMap.entries, {}, &MeterEntry::measure);
+    std::ranges::stable_sort(s.keyMap, {}, &KeyEntry::measure);
+}
+
+/// Removes the meter and key entries of measures first..last (never measure 1).
+void eraseMeterKey(Sequence& s, const int first, const int last) {
+    std::erase_if(s.meterMap.entries,
+                  [&](const MeterEntry& m) { return m.measure > 1 && m.measure >= first && m.measure <= last; });
+    std::erase_if(s.keyMap,
+                  [&](const KeyEntry& k) { return k.measure > 1 && k.measure >= first && k.measure <= last; });
+}
+
+/// Sets the meter and key of a measure (an entry each; the key entry only when it changes the key).
+void setMeterKey(Sequence& s, const int measure, const ClipMeterKey& mk) {
+    auto& entries = s.meterMap.entries;
+    const auto it = std::ranges::find(entries, measure, &MeterEntry::measure);
+    if (it != entries.end()) {
+        it->numerator = mk.numerator;
+        it->denominatorLog2 = mk.denominatorLog2;
+    } else {
+        MeterEntry m;
+        m.measure = measure;
+        m.numerator = mk.numerator;
+        m.denominatorLog2 = mk.denominatorLog2;
+        entries.push_back(m);
+        std::ranges::stable_sort(entries, {}, &MeterEntry::measure);
+    }
+    const auto kt = std::ranges::find(s.keyMap, measure, &KeyEntry::measure);
+    if (kt != s.keyMap.end()) {
+        kt->alterations = mk.alterations;
+    } else {
+        s.keyMap.push_back(KeyEntry{measure, mk.alterations});
+        std::ranges::stable_sort(s.keyMap, {}, &KeyEntry::measure);
+    }
+}
+
+} // namespace
+
+Clipboard copy(const Sequence& sequence, const Selection& selection, const CopyOptions& options) {
+    Clipboard clip;
+    const Tick from = std::min(selection.from, selection.thru);
+    const Tick thru = std::max(selection.from, selection.thru);
+    clip.length = thru - from + 1;
+    if (options.events) {
+        for (const Stream& t : sequence.streams) {
+            if (!selected(selection, t.number)) {
+                continue;
+            }
+            Clipboard::Track track;
+            track.streamNumber = t.number;
+            for (const Event& e : t.events) {
+                if (e.time >= from && e.time <= thru && options.filter.includes(e, sequence.meterMap)) {
+                    Event c = e;
+                    c.time -= from;
+                    track.events.push_back(std::move(c));
+                }
+            }
+            if (!track.events.empty()) {
+                clip.tracks.push_back(std::move(track));
+            }
+        }
+    }
+    if (options.tempo) {
+        for (const TempoEntry& e : sequence.tempoMap.entries) {
+            if (e.time >= from && e.time <= thru) {
+                TempoEntry c = e;
+                c.time -= from;
+                clip.tempo.push_back(c);
+            }
+        }
+    }
+    if (options.meterKey && wholeMeasures(sequence, from, thru)) {
+        const int first = sequence.meterMap.measureAt(from);
+        const int last = sequence.meterMap.measureAt(thru);
+        clip.measures = last - first + 1;
+        for (int m = first; m <= last; ++m) {
+            const MeterEntry& me = sequence.meterMap.atMeasure(m);
+            const bool change = m == first || me.measure == m ||
+                                std::ranges::find(sequence.keyMap, m, &KeyEntry::measure) != sequence.keyMap.end();
+            if (change) {
+                clip.meterKey.push_back({m - first, me.numerator, me.denominatorLog2, alterationsAt(sequence, m)});
+            }
+        }
+    }
+    return clip;
+}
+
+Clipboard cut(Sequence& sequence, const Selection& selection, const CutOptions& options) {
+    CopyOptions co;
+    co.events = options.events;
+    co.filter = options.filter;
+    co.tempo = options.tempo;
+    co.meterKey = options.meterKey;
+    Clipboard clip = copy(sequence, selection, co);
+    const Tick from = std::min(selection.from, selection.thru);
+    const Tick thru = std::max(selection.from, selection.thru);
+    if (options.events) {
+        for (Stream& t : sequence.streams) {
+            if (!selected(selection, t.number)) {
+                continue;
+            }
+            std::erase_if(t.events, [&](const Event& e) {
+                return e.time >= from && e.time <= thru && options.filter.includes(e, sequence.meterMap);
+            });
+            if (options.deleteHole) {
+                shiftEvents(t, thru + 1, -clip.length);
+            }
+        }
+    }
+    if (options.tempo) {
+        std::erase_if(sequence.tempoMap.entries,
+                      [&](const TempoEntry& e) { return e.time > 0 && e.time >= from && e.time <= thru; });
+        if (options.deleteHole) {
+            shiftTempo(sequence.tempoMap, thru + 1, -clip.length);
+        }
+    }
+    if (options.meterKey && clip.measures > 0) {
+        const int first = sequence.meterMap.measureAt(from);
+        eraseMeterKey(sequence, first, first + clip.measures - 1);
+        if (options.deleteHole) {
+            shiftMeterKey(sequence, first + clip.measures, -clip.measures);
+        }
+    }
+    return clip;
+}
+
+int paste(Sequence& sequence, const Clipboard& clipboard, const PasteOptions& options) {
+    const int reps = std::max(1, options.repetitions);
+    const Tick span = clipboard.length * reps;
+    const Tick to = options.to;
+    const int toMeasure = sequence.meterMap.measureAt(to);
+    const bool withTempo = options.tempo && !clipboard.tempo.empty();
+    const bool withMeterKey = options.meterKey && clipboard.measures > 0;
+    std::vector<int> affected = options.streams;
+    if (options.toStream) {
+        affected = {*options.toStream};
+    }
+    const auto isAffected = [&](const int n) { return std::ranges::find(affected, n) != affected.end(); };
+
+    if (options.mode == PasteMode::Replace) {
+        for (Stream& t : sequence.streams) {
+            if (isAffected(t.number)) {
+                std::erase_if(t.events, [&](const Event& e) { return e.time >= to && e.time < to + span; });
+            }
+        }
+        if (withTempo) {
+            std::erase_if(sequence.tempoMap.entries,
+                          [&](const TempoEntry& e) { return e.time > 0 && e.time >= to && e.time < to + span; });
+        }
+        if (withMeterKey) {
+            eraseMeterKey(sequence, toMeasure, toMeasure + clipboard.measures * reps - 1);
+        }
+    } else if (options.mode == PasteMode::SlideOver) {
+        for (Stream& t : sequence.streams) {
+            if (isAffected(t.number)) {
+                shiftEvents(t, to, span);
+            }
+        }
+        if (withTempo) {
+            shiftTempo(sequence.tempoMap, to, span);
+        }
+        if (withMeterKey) {
+            shiftMeterKey(sequence, toMeasure, clipboard.measures * reps);
+        }
+    }
+
+    int inserted = 0;
+    for (int r = 0; r < reps; ++r) {
+        const Tick base = to + clipboard.length * r;
+        if (options.events) {
+            for (const Clipboard::Track& track : clipboard.tracks) {
+                Stream& t = sequence.stream(options.toStream.value_or(track.streamNumber));
+                for (const Event& e : track.events) {
+                    Event c = e;
+                    c.time += base;
+                    t.events.push_back(std::move(c));
+                    ++inserted;
+                }
+            }
+        }
+        if (withTempo) {
+            for (const TempoEntry& e : clipboard.tempo) {
+                sequence.tempoMap.set(base + e.time, e.bpm100);
+            }
+        }
+        if (withMeterKey) {
+            for (const ClipMeterKey& mk : clipboard.meterKey) {
+                setMeterKey(sequence, toMeasure + clipboard.measures * r + mk.measure, mk);
+            }
+        }
+    }
+    if (inserted > 0) {
+        for (Stream& t : sequence.streams) {
+            sortEvents(t.events);
+        }
+    }
+    return inserted;
+}
+
+Sequence toSequence(const Clipboard& clipboard, const int ppq) {
+    Sequence s;
+    s.ppq = ppq;
+    s.syncPpq();
+    for (const Clipboard::Track& track : clipboard.tracks) {
+        s.stream(track.streamNumber).events = track.events;
+    }
+    for (const TempoEntry& e : clipboard.tempo) {
+        s.tempoMap.set(e.time, e.bpm100);
+    }
+    for (const ClipMeterKey& mk : clipboard.meterKey) {
+        setMeterKey(s, 1 + mk.measure, mk);
+    }
+    return s;
+}
+
+Clipboard fromSequence(const Sequence& sequence) {
+    Clipboard clip;
+    clip.length = sequence.endTime() + 1;
+    for (const Stream& t : sequence.streams) {
+        if (!t.events.empty()) {
+            clip.tracks.push_back({t.number, t.events});
+        }
+    }
+    clip.tempo = sequence.tempoMap.entries;
+    const int measures = sequence.meterMap.measureAt(std::max<Tick>(0, clip.length - 1));
+    clip.measures = measures;
+    for (int m = 1; m <= measures; ++m) {
+        const MeterEntry& me = sequence.meterMap.atMeasure(m);
+        if (m == 1 || me.measure == m ||
+            std::ranges::find(sequence.keyMap, m, &KeyEntry::measure) != sequence.keyMap.end()) {
+            clip.meterKey.push_back({m - 1, me.numerator, me.denominatorLog2, alterationsAt(sequence, m)});
+        }
+    }
+    return clip;
+}
+
+// ---------------------------------------------------------------- Undo
+
+void Undo::before(const Sequence& sequence, std::string command) {
+    saved_ = sequence;
+    command_ = std::move(command);
+    undone_ = false;
+}
+
+std::string Undo::label() const {
+    if (!saved_) {
+        return "Undo";
+    }
+    return (undone_ ? "Redo " : "Undo ") + command_;
+}
+
+bool Undo::apply(Sequence& sequence) {
+    if (!saved_) {
+        return false;
+    }
+    std::swap(*saved_, sequence);
+    undone_ = !undone_;
+    return true;
+}
+
+void Undo::clear() noexcept {
+    saved_.reset();
+    command_.clear();
+    undone_ = false;
 }
 
 } // namespace sseq::edit

@@ -9,12 +9,18 @@
 #include <memory>
 #include <new>
 #include <string>
+#include <utility>
 #include <vector>
 
 // The opaque handles wrap the C++ objects.
 struct sseq_sequence {
     sseq::Sequence sequence;
     mutable std::string scratch; // backs const char* results until the next call that changes the sequence
+};
+
+struct sseq_clipboard {
+    sseq::edit::Clipboard clipboard;
+    mutable std::vector<std::uint8_t> smf; // backs sseq_clipboard_smf
 };
 
 namespace {
@@ -302,7 +308,7 @@ void applyFilter(const sseq_event_filter* f, sseq::edit::EventFilter& filter) {
 extern "C" {
 
 const char* sseq_version(void) {
-    return "0.6.0";
+    return "0.7.0";
 }
 
 const char* sseq_last_error(void) {
@@ -330,6 +336,14 @@ sseq_sequence* sseq_sequence_copy(const sseq_sequence* sequence) {
     auto* s = new sseq_sequence{}; // NOLINT(cppcoreguidelines-owning-memory)
     s->sequence = sequence->sequence;
     return s;
+}
+
+void sseq_sequence_swap(sseq_sequence* a, sseq_sequence* b) {
+    if (a != nullptr && b != nullptr) {
+        std::swap(a->sequence, b->sequence);
+        a->scratch.clear();
+        b->scratch.clear();
+    }
 }
 
 void sseq_sequence_free(sseq_sequence* sequence) {
@@ -1121,6 +1135,122 @@ int sseq_controller_fill(sseq_sequence* sequence, const int index, const sseq_co
     o.from = options->from;
     o.thru = options->thru;
     return sseq::edit::controllerFill(*t, o);
+}
+
+sseq_clipboard* sseq_copy(const sseq_sequence* sequence, const sseq_selection* selection,
+                          const sseq_copy_options* options) {
+    sseq::edit::Selection sel;
+    if (options == nullptr || !toSelection(sequence, selection, sel)) {
+        setError("null argument");
+        return nullptr;
+    }
+    sseq::edit::CopyOptions o;
+    o.events = options->events != 0;
+    applyFilter(options->filter, o.filter);
+    o.tempo = options->tempo != 0;
+    o.meterKey = options->meter_key != 0;
+    auto* clip = new (std::nothrow) sseq_clipboard; // NOLINT(cppcoreguidelines-owning-memory)
+    if (clip != nullptr) {
+        clip->clipboard = sseq::edit::copy(sequence->sequence, sel, o);
+    }
+    return clip;
+}
+
+sseq_clipboard* sseq_cut(sseq_sequence* sequence, const sseq_selection* selection, const sseq_cut_options* options) {
+    sseq::edit::Selection sel;
+    if (options == nullptr || !toSelection(sequence, selection, sel)) {
+        setError("null argument");
+        return nullptr;
+    }
+    sseq::edit::CutOptions o;
+    o.events = options->events != 0;
+    applyFilter(options->filter, o.filter);
+    o.deleteHole = options->delete_hole != 0;
+    o.tempo = options->tempo != 0;
+    o.meterKey = options->meter_key != 0;
+    auto* clip = new (std::nothrow) sseq_clipboard; // NOLINT(cppcoreguidelines-owning-memory)
+    if (clip != nullptr) {
+        clip->clipboard = sseq::edit::cut(sequence->sequence, sel, o);
+    }
+    return clip;
+}
+
+int sseq_paste(sseq_sequence* sequence, const sseq_clipboard* clipboard, const sseq_selection* selection,
+               const sseq_paste_options* options) {
+    sseq::edit::Selection sel;
+    if (clipboard == nullptr || options == nullptr || !toSelection(sequence, selection, sel)) {
+        setError("null argument");
+        return -1;
+    }
+    sseq::edit::PasteOptions o;
+    o.to = options->to;
+    o.repetitions = options->repetitions;
+    o.mode = static_cast<sseq::edit::PasteMode>(options->mode);
+    o.events = options->events != 0;
+    o.tempo = options->tempo != 0;
+    o.meterKey = options->meter_key != 0;
+    o.streams = sel.streams;
+    if (options->to_stream >= 0) {
+        const sseq::Stream* t = streamAt(sequence, options->to_stream);
+        if (t == nullptr) {
+            return -1;
+        }
+        o.toStream = t->number;
+    }
+    return sseq::edit::paste(sequence->sequence, clipboard->clipboard, o);
+}
+
+void sseq_clipboard_free(sseq_clipboard* clipboard) {
+    delete clipboard; // NOLINT(cppcoreguidelines-owning-memory)
+}
+
+sseq_tick sseq_clipboard_length(const sseq_clipboard* clipboard) {
+    return clipboard == nullptr ? 0 : clipboard->clipboard.length;
+}
+
+int sseq_clipboard_track_count(const sseq_clipboard* clipboard) {
+    return clipboard == nullptr ? 0 : static_cast<int>(clipboard->clipboard.tracks.size());
+}
+
+int sseq_clipboard_tempo_count(const sseq_clipboard* clipboard) {
+    return clipboard == nullptr ? 0 : static_cast<int>(clipboard->clipboard.tempo.size());
+}
+
+int sseq_clipboard_measures(const sseq_clipboard* clipboard) {
+    return clipboard == nullptr ? 0 : clipboard->clipboard.measures;
+}
+
+const uint8_t* sseq_clipboard_smf(const sseq_clipboard* clipboard, const int ppq, size_t* size) {
+    if (clipboard == nullptr || size == nullptr) {
+        setError("null argument");
+        return nullptr;
+    }
+    try {
+        clipboard->smf = sseq::smf::write(sseq::edit::toSequence(clipboard->clipboard, ppq));
+    } catch (const std::exception& e) {
+        setError(e.what());
+        return nullptr;
+    }
+    *size = clipboard->smf.size();
+    return clipboard->smf.data();
+}
+
+sseq_clipboard* sseq_clipboard_from_smf(const uint8_t* bytes, const size_t size) {
+    if (bytes == nullptr) {
+        setError("null argument");
+        return nullptr;
+    }
+    try {
+        const sseq::Sequence s = sseq::smf::read(std::vector<std::uint8_t>(bytes, bytes + size));
+        auto* clip = new (std::nothrow) sseq_clipboard; // NOLINT(cppcoreguidelines-owning-memory)
+        if (clip != nullptr) {
+            clip->clipboard = sseq::edit::fromSequence(s);
+        }
+        return clip;
+    } catch (const std::exception& e) {
+        setError(e.what());
+        return nullptr;
+    }
 }
 
 // ---------------------------------------------------------------- sysex banks

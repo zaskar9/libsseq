@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace sseq::edit {
@@ -185,5 +186,111 @@ struct ControllerFillOptions {
 /// value lands on `from`, the last on `thru`. New events go before existing ones on the same tick.
 /// Returns the number of events inserted.
 int controllerFill(Stream& stream, const ControllerFillOptions& options);
+
+// ---------------------------------------------------------------- Cut, Copy, Paste
+
+/// A meter and key signature at a measure of the clipboard (measure 0 = the region's first).
+struct ClipMeterKey {
+    int measure = 0;
+    int numerator = 4;
+    int denominatorLog2 = 2;
+    int alterations = 0;
+};
+
+/// What Copy and Cut put on the clipboard, and what Paste reads: the region's events per source
+/// stream with times relative to From, its tempo entries, and, for a region of whole measures, the
+/// meter and key per measure. Cakewalk also offers it to other applications as a Standard MIDI
+/// File image; `smf::write` of a sequence built from it gives the same.
+struct Clipboard {
+    struct Track {
+        int streamNumber = 0;
+        std::vector<Event> events; // times relative to From
+    };
+    Tick length = 0;                    // thru - from + 1: the span, and the step between repetitions
+    std::vector<Track> tracks;          // streams that had events in the region ("unblank tracks")
+    std::vector<TempoEntry> tempo;      // times relative to From; empty when not copied
+    std::vector<ClipMeterKey> meterKey; // entry 0 restates the state at From; empty when not copied
+    int measures = 0;                   // whole measures covered when meterKey was copied
+
+    [[nodiscard]] bool empty() const noexcept { return tracks.empty() && tempo.empty() && meterKey.empty(); }
+};
+
+struct CopyOptions {
+    bool events = true; // "Events": the selected streams' events in From..Thru (start time)
+    EventFilter filter = EventFilter::all();
+    bool tempo = false;    // "Tempo changes" in From..Thru
+    bool meterKey = false; // "Meter/key changes": only when From..Thru is whole measures
+};
+
+/// Edit > Copy. Meter and key are copied only when From starts a measure and Thru ends one
+/// (Cakewalk greys the box otherwise).
+[[nodiscard]] Clipboard copy(const Sequence& sequence, const Selection& selection, const CopyOptions& options);
+
+struct CutOptions {
+    bool events = true;
+    EventFilter filter = EventFilter::all(); // Cakewalk: not together with deleteHole
+    bool deleteHole = false; // move what follows the region earlier by its length, on the selected streams
+    bool tempo = false;
+    bool meterKey = false;
+};
+
+/// Edit > Cut: copy(), then removal. With deleteHole the selected streams' later events move
+/// earlier by the region's length; so do the tempo map (when tempo is cut) and the meter/key map
+/// by the region's measures (when they are cut). Cakewalk Apprentice 1.04 moves the tempo map by
+/// one tick less than the events in that case; libsseq moves both by the same amount.
+Clipboard cut(Sequence& sequence, const Selection& selection, const CutOptions& options);
+
+enum class PasteMode {
+    Blend,    // "Blend old and new material"
+    Replace,  // "Replace old material with new": clear the destination range first
+    SlideOver // "Slide over existing material to make room": move the destination later first
+};
+
+struct PasteOptions {
+    Tick to = 0;         // "To time"
+    int repetitions = 1; // "Repetitions", one after another
+    PasteMode mode = PasteMode::Blend;
+    bool events = true; // "Paste what"
+    bool tempo = false; // Cakewalk allows this with Replace and SlideOver only
+    bool meterKey = false;
+    std::optional<int> toStream; // "Paste to One track": every clipboard track goes to this stream
+    std::vector<int> streams;    // the selected streams: Replace clears and SlideOver moves these
+                                 // (ignored with toStream, where only that stream is affected)
+};
+
+/// Edit > Paste / Paste to One track. The destination range is `to .. to + length * repetitions - 1`
+/// on the affected streams: Replace removes its events (and tempo entries, when tempo is pasted),
+/// SlideOver moves everything from `to` on later by that span (tempo and meter/key maps too when
+/// pasted). Then each repetition's events go to their source streams (or `toStream`), tempo entries
+/// are set at their times, and meter/key entries at the measure of `to` onward. Returns the number
+/// of events inserted.
+int paste(Sequence& sequence, const Clipboard& clipboard, const PasteOptions& options);
+
+/// The clipboard as a sequence (times from 0, the tracks as streams with their numbers, tempo and
+/// meter/key maps), for a Standard MIDI File image on a system pasteboard: `smf::write(toSequence(clip, ppq))`.
+[[nodiscard]] Sequence toSequence(const Clipboard& clipboard, int ppq);
+/// A clipboard from a sequence read from such an image: every stream, the whole tempo and
+/// meter/key maps, length = the end of the last event + 1.
+[[nodiscard]] Clipboard fromSequence(const Sequence& sequence);
+
+// ---------------------------------------------------------------- Undo
+
+/// Edit > Undo, one level as in Cakewalk: the sequence as it was before the last Edit command.
+/// After undo() the same entry serves as "Redo <command>"; a new before() replaces it.
+class Undo {
+public:
+    void before(const Sequence& sequence, std::string command); // call before applying an Edit command
+    [[nodiscard]] bool available() const noexcept { return saved_.has_value(); }
+    /// "Undo Quantize", "Redo Quantize", or "Undo" when nothing is saved (the menu item's text).
+    [[nodiscard]] std::string label() const;
+    /// Swaps the saved state with the sequence: undo, or redo after an undo. False when nothing is saved.
+    bool apply(Sequence& sequence);
+    void clear() noexcept;
+
+private:
+    std::optional<Sequence> saved_;
+    std::string command_;
+    bool undone_ = false;
+};
 
 } // namespace sseq::edit

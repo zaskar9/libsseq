@@ -388,6 +388,37 @@ static void test_quantize(void) {
     CHECK((f.kinds & (1u << SSEQ_EVENT_NOTE)) == 0 && (f.kinds & (1u << SSEQ_EVENT_TEXT)) != 0);
     so.filter = &f;
     CHECK(sseq_slide(s, &all, &so) == 0); /* nothing passes */
+    /* Copy the two notes of stream t0 (at 15 and 220) and paste them to a new stream twice. */
+    sseq_copy_options cpo = {1, NULL, 0, 0};
+    sseq_selection only0 = {streams, 1, 0, 1000};
+    sseq_clipboard* clip = sseq_copy(s, &only0, &cpo);
+    CHECK(clip != NULL && sseq_clipboard_length(clip) == 1001 && sseq_clipboard_track_count(clip) == 1);
+    int t2 = sseq_sequence_add_stream(s, 2);
+    sseq_paste_options ppo = {2000, 2, SSEQ_PASTE_BLEND, 1, 0, 0, t2};
+    CHECK(sseq_paste(s, clip, &all, &ppo) == 4);
+    CHECK(sseq_stream_event_count(s, t2) == 4);
+    CHECK(sseq_stream_event(s, t2, 2, &e) && e.time == 3116); /* 115 + 2000 + 1001 */
+    size_t smf_size = 0;
+    const uint8_t* smf = sseq_clipboard_smf(clip, 120, &smf_size);
+    CHECK(smf != NULL && smf_size > 14 && smf[0] == 'M' && smf[1] == 'T');
+    sseq_clipboard* back = sseq_clipboard_from_smf(smf, smf_size);
+    CHECK(back != NULL && sseq_clipboard_track_count(back) == 1 && sseq_clipboard_length(back) == 220 + 30 + 1);
+    sseq_clipboard_free(back);
+    sseq_clipboard_free(clip);
+    /* Cut with a hole: the pasted notes at 2115.. move earlier by 1001. */
+    sseq_cut_options cuo = {1, NULL, 1, 0, 0};
+    sseq_selection cutsel = {&t2, 1, 1000, 2000};
+    clip = sseq_cut(s, &cutsel, &cuo);
+    CHECK(clip != NULL && sseq_clipboard_track_count(clip) == 0);
+    CHECK(sseq_stream_event(s, t2, 0, &e) && e.time == 2115 - 1001);
+    sseq_clipboard_free(clip);
+    /* Undo by copy and swap. */
+    sseq_sequence* before = sseq_sequence_copy(s);
+    sseq_sequence_remove_stream(s, t2);
+    CHECK(sseq_sequence_stream_count(s) == 2);
+    sseq_sequence_swap(s, before);
+    CHECK(sseq_sequence_stream_count(s) == 3 && sseq_sequence_stream_count(before) == 2);
+    sseq_sequence_free(before);
     /* Controller fill: 50..60 over 30 ticks on stream t1 gives 11 events, one every 3 ticks. */
     sseq_controller_fill_options fo = {7, 0, 50, 60, 0, 30};
     CHECK(sseq_controller_fill(s, t1, &fo) == 11);
@@ -403,7 +434,7 @@ static void test_quantize(void) {
 
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
-    CHECK(strcmp(sseq_version(), "0.6.0") == 0);
+    CHECK(strcmp(sseq_version(), "0.7.0") == 0);
     CHECK(strcmp(sseq_last_error(), "") == 0);
     test_sequence_and_files(dir);
     {

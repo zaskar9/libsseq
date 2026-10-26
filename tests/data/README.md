@@ -47,6 +47,7 @@ memory, so they are not authoritative editions).
 | `TWINKLE.WRK` | Twinkle, Twinkle, Little Star (French traditional, 18th c.) with block chords and varied velocities |
 | `FURELISE.WRK` | Fuer Elise, opening (Beethoven, WoO 59, 1810) in 3/8 for two hands |
 | `QUANT.WRK` | Edit/Quantize test bed: every start offset in a half note, durations 1..75 and around multiples of a sixteenth, one event of every MIDI kind off the grid |
+| `CLIP.WRK` | Cut/Copy/Paste test bed: a melody every beat and chords with controllers over nine measures, notes across region borders, tempo changes, a 3/4 stretch and key changes |
 | `EFILT.WRK` | Event filter test bed: one stream per field, 60 events each at off-grid ticks (n * 240 + n) with the filtered value running over n |
 | `XPOSE.WRK` | Edit/Transpose test bed: every key 0..127, key aftertouch and other kinds, a chromatic octave in C major, D major (measure 3) and E-flat major (measure 5) |
 
@@ -74,6 +75,16 @@ Select All) unless a From/Thru is given; `tests/edit_tests.cpp` lists every sett
   10..50, `_INCL` Nothing then Note and Wheel), and through Slide (+100 ticks) on `SYN_KIND.WRK`
   (`SYNK_FDEF` defaults, `_FNONE` Nothing, `_FTICK` tick 10..50: the string and sysex events move
   in all three).
+- Cut, Copy and Paste on `CLIP.WRK`, the region 2:01:000..3:01:000 unless noted, all tracks
+  selected unless noted: `CLIP_P1` paste at 9:01:000, `_P3R` three repetitions, `_PBLEND` onto
+  itself, `_PREPL` Replace at 3:01:000, `_PREPL2` with two repetitions, `_PSLIDE` Slide over at
+  2:01:000, `_PSLIDE2` at 3:01:000 with two repetitions, `_CUT`, `_CUTH` with Delete hole,
+  `_PTEMPO` Replace with tempo at 9:01:000, `_PREPLT` the same at 3:01:000, `_PSLTEMP` Slide over
+  with tempo at 2:01:000, `_PMAPS` region 2:01:000..3:04:119 with tempo and meter/key, Replace at
+  9:01:000, `_CUTMAPS` the same region cut with Delete hole, tempo and meter/key, `_PONE` and
+  `_PONE2` Paste to One track 3 at 9:01:000 (one and two repetitions), `_PONER` and `_PONES` the
+  same with Replace at 9:01:000 and Slide over at 2:01:000, `_PREPLSEL`, `_PSLSEL` and `_CUTHSEL`
+  Replace at 9:01:000, Slide over at 2:01:000 and Cut with Delete hole with track 2 deselected.
 - Controller fill on `QUANT.WRK` into track 1 (`CFILL_7` CC7 0..127 over 1:01:000..1:02:000,
   `CFILL_7D` the same downwards, `CFILL_PW` wheel -8192..8191 over a measure, `CFILL_1` CC1 100..20
   over ten ticks) and into track 4 (`CFILL_7B` CC7 50..60 on channel 4 over thirty ticks, replacing
@@ -97,7 +108,11 @@ Edit > Slide clamps the amount so that the region does not move before 1:1:000 i
 the error message its help describes. After an edit, the order of events on the same tick is not
 the file order (an unstable sort), so the edit tests compare same-tick events as a set. Under
 Wine, the Event Filter dialog's numeric fields take at most two typed digits; the oracle settings
-were chosen accordingly and each was confirmed by the outcome. The TRACK chunk holds the name
+were chosen accordingly and each was confirmed by the outcome. In the Paste dialog, checking
+"Tempo changes" switches "Blend" to "Replace" and choosing "Blend" clears it (Slide over keeps
+it). Edit > Cut with "Delete hole" and "Tempo changes" moves the tempo map by one tick less than
+the events (`CLIP_CUTMAPS`: 1440 becomes 481, not 480); libsseq moves both by the hole's length
+and the test states the difference. The TRACK chunk holds the name
 split into two 15-character fields; names longer than 30 characters survive only through the
 TRKNAME chunk. libsseq itself has none of these limits; the corpus stays within them so that
 every sequence has an oracle, and the corpus test encodes the padding and the frame rounding as

@@ -730,12 +730,58 @@ CorpusSequence efilt() {
     return c;
 }
 
+CorpusSequence clip() {
+    CorpusSequence c{"CLIP",
+                     "Cut/Copy/Paste test bed: a melody every beat and chords with controllers over nine "
+                     "measures, notes across region borders, tempo changes, a 3/4 stretch and key changes",
+                     {}};
+    Sequence& s = c.sequence;
+    s.tempoMap.set(0, 12000);
+    s.tempoMap.set(480, 10000);
+    s.tempoMap.set(720, 14000);
+    s.tempoMap.set(1440, 9000);
+    setMeter(s, 1, 4, 2);
+    setMeter(s, 3, 4, 2); // key change at measure 3 (Cakewalk: a meter entry as well)
+    setMeter(s, 5, 3, 2); // 3/4 from measure 5 (tick 1920), 4/4 again from measure 7 (tick 2640)
+    setMeter(s, 7, 4, 2);
+    setKey(s, 1, 0);
+    setKey(s, 3, 1);
+    setKey(s, 5, -1);
+    for (int i = 0; i < 3; ++i) {
+        static_cast<void>(s.stream(i));
+    }
+    Stream& mel = s.stream(0);
+    mel.name = "Melody";
+    mel.channel = 0;
+    for (int i = 0; i <= 30; ++i) {
+        mel.events.push_back(Event::note(Tick{i} * 120, 0, 48 + i, 100, 100));
+    }
+    mel.events.push_back(Event::note(440, 0, 100, 90, 200)); // across the measure 2 border
+    mel.events.push_back(Event::note(950, 0, 101, 90, 20));  // ends exactly at tick 970
+    sortEvents(mel.events);
+    Stream& ch = s.stream(1);
+    ch.name = "Chords";
+    ch.channel = 1;
+    for (int i = 0; i <= 15; ++i) {
+        ch.events.push_back(Event::note(Tick{i} * 240, 1, 36 + i, 80, 230));
+    }
+    for (int i = 0; i <= 22; ++i) {
+        ch.events.push_back(Event::controller(Tick{i} * 160, 1, 7, 20 + i * 4));
+    }
+    sortEvents(ch.events);
+    Stream& target = s.stream(2);
+    target.name = "Target";
+    target.channel = 2;
+    target.events.push_back(Event::note(3600, 2, 60, 100, 100)); // one note at the end so the track is not blank
+    return c;
+}
+
 } // namespace
 
 std::vector<CorpusSequence> allSequences() {
     return {synMinimal(),   synKinds(), synParams(),    synMaps(),  synOverlap(),  synDense(),    synStrings(),
             synWave(),      rowBoat(),  frereJacques(), odeToJoy(), jingleBells(), silentNight(), greensleeves(),
-            amazingGrace(), twinkle(),  furElise(),     quant(),    xpose(),       efilt()};
+            amazingGrace(), twinkle(),  furElise(),     quant(),    xpose(),       efilt(),       clip()};
 }
 
 } // namespace sseq::corpus

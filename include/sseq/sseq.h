@@ -30,7 +30,7 @@ typedef struct sseq_sequence sseq_sequence;
 typedef struct sseq_transport sseq_transport;
 typedef struct sseq_recorder sseq_recorder;
 
-const char* sseq_version(void); /* "0.6.0" */
+const char* sseq_version(void); /* "0.7.0" */
 /* The message of the last failure on this thread ("" when there was none). */
 const char* sseq_last_error(void);
 
@@ -72,6 +72,8 @@ typedef struct {
 
 sseq_sequence* sseq_sequence_new(void);
 sseq_sequence* sseq_sequence_copy(const sseq_sequence* sequence);
+void sseq_sequence_swap(sseq_sequence* a,
+                        sseq_sequence* b); /* one-level undo: copy before an edit, swap to undo or redo */
 void sseq_sequence_free(sseq_sequence* sequence);
 
 /* Files. `normalize` != 0 writes the chunk order Cakewalk uses and drops legacy chunks;
@@ -385,6 +387,54 @@ typedef struct {
  * events on the channel in the range are replaced by one event per value, each at the tick the
  * line reaches it (see edit.hpp). Returns the number of events inserted (-1 on a bad argument). */
 int sseq_controller_fill(sseq_sequence* sequence, int index, const sseq_controller_fill_options* options);
+
+/* Cut, Copy, Paste. The clipboard holds the region's events per source stream (times relative
+ * to From), its tempo entries and, for whole measures, the meter and key per measure. */
+typedef struct sseq_clipboard sseq_clipboard;
+
+typedef struct {
+    int events;                      /* "Events" from the selected streams */
+    const sseq_event_filter* filter; /* NULL: every kind */
+    int tempo;                       /* "Tempo changes" */
+    int meter_key;                   /* "Meter/key changes": whole measures only */
+} sseq_copy_options;
+
+typedef struct {
+    int events;
+    const sseq_event_filter* filter;
+    int delete_hole; /* "Delete hole": what follows moves earlier on the selected streams */
+    int tempo;
+    int meter_key;
+} sseq_cut_options;
+
+typedef enum { SSEQ_PASTE_BLEND = 0, SSEQ_PASTE_REPLACE, SSEQ_PASTE_SLIDE_OVER } sseq_paste_mode;
+
+typedef struct {
+    sseq_tick to;    /* "To time" */
+    int repetitions; /* "Repetitions" */
+    sseq_paste_mode mode;
+    int events; /* "Paste what" */
+    int tempo;  /* with Replace or Slide over only, as in Cakewalk */
+    int meter_key;
+    int to_stream; /* "Paste to One track": stream index, or -1 for the source streams */
+} sseq_paste_options;
+
+sseq_clipboard* sseq_copy(const sseq_sequence* sequence, const sseq_selection* selection,
+                          const sseq_copy_options* options);
+sseq_clipboard* sseq_cut(sseq_sequence* sequence, const sseq_selection* selection, const sseq_cut_options* options);
+/* The selection names the streams Replace clears and Slide over moves (with to_stream, only that
+ * stream is affected). Returns the number of events inserted, -1 on a bad argument. */
+int sseq_paste(sseq_sequence* sequence, const sseq_clipboard* clipboard, const sseq_selection* selection,
+               const sseq_paste_options* options);
+void sseq_clipboard_free(sseq_clipboard* clipboard);
+sseq_tick sseq_clipboard_length(const sseq_clipboard* clipboard);
+int sseq_clipboard_track_count(const sseq_clipboard* clipboard); /* streams with events */
+int sseq_clipboard_tempo_count(const sseq_clipboard* clipboard);
+int sseq_clipboard_measures(const sseq_clipboard* clipboard); /* whole measures with meter/key, or 0 */
+/* The clipboard as a Standard MIDI File image (Cakewalk's interchange format), valid until the
+ * next call on the clipboard; and a clipboard from such an image (NULL on failure). */
+const uint8_t* sseq_clipboard_smf(const sseq_clipboard* clipboard, int ppq, size_t* size);
+sseq_clipboard* sseq_clipboard_from_smf(const uint8_t* bytes, size_t size);
 
 /* ---------------------------------------------------------------- sysex banks */
 
