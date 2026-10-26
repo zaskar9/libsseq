@@ -125,8 +125,15 @@ bool sameEvent(const Event& x, const Event& y) {
     const bool samePayload =
         x.payload == y.payload ||
         (x.kind == EventKind::Wave && (padWave(x.payload) == y.payload || x.payload == padWave(y.payload)));
-    return x.time == y.time && x.kind == y.kind && x.channel == y.channel && x.data1 == y.data1 && x.data2 == y.data2 &&
-           x.duration == y.duration && samePayload;
+    // Only the fields a kind uses are compared: Cakewalk's MIDI import leaves stale bytes in the
+    // unused ones (1 in the duration of Patch events, a pressure in data2 of ChannelAftertouch),
+    // which our import does not reproduce (tests/data/README.md).
+    const bool usesData2 =
+        x.kind == EventKind::Note || x.kind == EventKind::KeyAftertouch || x.kind == EventKind::Controller;
+    const bool sameData2 = !usesData2 || x.data2 == y.data2;
+    const bool sameDuration = x.kind != EventKind::Note || x.duration == y.duration;
+    return x.time == y.time && x.kind == y.kind && x.channel == y.channel && x.data1 == y.data1 && sameData2 &&
+           sameDuration && samePayload;
 }
 
 /// Events of a stream in canonical order: by time, then by a total order on the fields, so that

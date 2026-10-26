@@ -149,6 +149,7 @@ Event readMidiEvent(Reader& r, const Tick time, const std::uint8_t status, const
         }
         e.kind = (status & 0xf0U) == 0xc0 ? EventKind::Patch : EventKind::ChannelAftertouch;
         e.data1 = d1;
+        e.data2 = d2; // unused by these kinds; Cakewalk's MIDI import leaves stale bytes here, kept for round trips
         break;
     case 0xe0:
         if (!fixed) {
@@ -169,6 +170,10 @@ Event readMidiEvent(Reader& r, const Tick time, const std::uint8_t status, const
     default:
         throw Error("unknown event status " + std::to_string(status));
     }
+    // The fixed layout has the 16-bit field for every kind. It is normally 0 outside notes, but
+    // Cakewalk's MIDI import writes 1 there for Patch events (meaning unknown); keep it so the
+    // file round-trips.
+    e.duration = dur;
     return e;
 }
 
@@ -512,7 +517,6 @@ void writeMidiEventBody(Writer& w, const Event& e, const bool fixed) {
         status = 0x90;
         d1 = bytes::u8(e.data1);
         d2 = bytes::u8(e.data2);
-        dur = bytes::u16(e.duration);
         break;
     case EventKind::KeyAftertouch:
     case EventKind::Controller:
@@ -524,6 +528,7 @@ void writeMidiEventBody(Writer& w, const Event& e, const bool fixed) {
     case EventKind::ChannelAftertouch:
         status = e.kind == EventKind::Patch ? 0xc0 : 0xd0;
         d1 = bytes::u8(e.data1);
+        d2 = bytes::u8(e.data2);
         break;
     case EventKind::PitchWheel: {
         const int v = e.data1 + 8192;
@@ -539,6 +544,7 @@ void writeMidiEventBody(Writer& w, const Event& e, const bool fixed) {
     default:
         throw Error("not a MIDI event");
     }
+    dur = bytes::u16(e.duration); // notes: the duration; other kinds: the field as read (normally 0)
     w.u8(status | (e.kind == EventKind::Sysex ? 0U : (e.channel & 0x0fU)));
     if (fixed) {
         w.u8(d1);

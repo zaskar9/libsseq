@@ -30,7 +30,7 @@ typedef struct sseq_sequence sseq_sequence;
 typedef struct sseq_transport sseq_transport;
 typedef struct sseq_recorder sseq_recorder;
 
-const char* sseq_version(void); /* "0.5.0" */
+const char* sseq_version(void); /* "0.5.1" */
 /* The message of the last failure on this thread ("" when there was none). */
 const char* sseq_last_error(void);
 

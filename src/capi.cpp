@@ -219,7 +219,7 @@ int toData(const std::vector<std::uint8_t>& bytes, sseq_data* out) {
 extern "C" {
 
 const char* sseq_version(void) {
-    return "0.5.0";
+    return "0.5.1";
 }
 
 const char* sseq_last_error(void) {

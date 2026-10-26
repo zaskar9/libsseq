@@ -361,7 +361,7 @@ static void test_quantize(void) {
 
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
-    CHECK(strcmp(sseq_version(), "0.5.0") == 0);
+    CHECK(strcmp(sseq_version(), "0.5.1") == 0);
     CHECK(strcmp(sseq_last_error(), "") == 0);
     test_sequence_and_files(dir);
     {

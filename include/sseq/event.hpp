@@ -34,8 +34,11 @@ struct Event {
     EventKind kind = EventKind::Note;
     std::uint8_t channel = 0; // 0..15, MIDI channel events only
     int data1 = 0;
-    int data2 = 0;
-    Tick duration = 0;                 // notes only
+    int data2 = 0;     // unused by Patch and ChannelAftertouch, but kept as read (see below)
+    Tick duration = 0; // notes: duration in ticks. Other MIDI kinds: the file's 16-bit field, normally 0.
+                       // Cakewalk's MIDI import leaves stale bytes in the unused fields (1 in the
+                       // duration of Patch events, a pressure in data2 of ChannelAftertouch); libsseq
+                       // keeps them so that such files round-trip, and ignores them otherwise.
     std::vector<std::uint8_t> payload; // string events only
 
     [[nodiscard]] bool isMidi() const noexcept { return kind <= EventKind::Sysex; }

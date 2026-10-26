@@ -63,7 +63,12 @@ table, which is case-insensitive: two texts that differ only in case collapse in
 seen first, and an empty text event is dropped. A Wave payload is saved with its length rounded
 up to a multiple of 32 bytes and zero-padded (the allocated block, not the data). A SMPTE-locked
 marker is converted to whole frames and back, so its tick can move by a frame's worth of ticks.
-The MIDI thru port is reset to a port that exists on the machine. The TRACK chunk holds the name
+The MIDI thru port is reset to a port that exists on the machine. After a MIDI import, event
+records carry stale bytes in the fields their kind does not use: a Patch event that survives the
+import (not at tick 0, so not absorbed into the track's patch) has 1 in the 16-bit duration field,
+and a Channel aftertouch event has the previous key aftertouch's pressure in data2. libsseq keeps
+these fields as read so that the files round-trip, and the corpus test compares only the fields a
+kind uses. The TRACK chunk holds the name
 split into two 15-character fields; names longer than 30 characters survive only through the
 TRKNAME chunk. libsseq itself has none of these limits; the corpus stays within them so that
 every sequence has an oracle, and the corpus test encodes the padding and the frame rounding as
