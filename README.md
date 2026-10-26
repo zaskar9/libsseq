@@ -18,7 +18,8 @@ functional scope of Cakewalk's `TTSSEQ.DLL` sequencer engine. MIT licensed.
 - Display text as Cakewalk shows it: key names (`C 5` = 60), durations (`1:080`), event kind names,
   General MIDI program names.
 - Editing as the Edit menu does it, with the arithmetic taken from Cakewalk Apprentice 1.04:
-  Quantize (resolution, starting times and durations, strength, event filter) on a selected region.
+  Quantize, Length, Transpose (chromatic and diatonic), Slide and Controller fill on a selected
+  region, with the event filter's kinds.
 - C API (`sseq/sseq.h`) over all of the above, and a Swift package (`import SSeq`).
 - No dependencies beyond the C++ standard library.
 
@@ -94,7 +95,7 @@ The C header is `include/sseq/sseq.h`; `tests/capi_tests.c` shows every call in 
 
 ## Status
 
-v0.5: model, formats, display text, engine, recorder, editing (quantize), C API, Swift package,
-tool, tests. Planned: the other editing operations (transpose, slide, length, controller fill,
-cut/copy/paste with event filter) checked against Cakewalk Apprentice 1.04. Platform adapters (a
+v0.6: model, formats, display text, engine, recorder, editing (Quantize, Length, Transpose,
+Slide, Controller fill), C API, Swift package, tool, tests. Planned: cut/copy/paste with the event
+filter, checked against Cakewalk Apprentice 1.04. Platform adapters (a
 CoreMIDI sink and clock, for example) belong to the application using the library.

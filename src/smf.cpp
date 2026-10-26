@@ -141,7 +141,15 @@ std::vector<std::uint8_t> write(const Sequence& sequence, const WriteOptions& op
     std::vector<Item> items;
     items.reserve(sequence.meterMap.entries.size() + sequence.keyMap.size() + sequence.tempoMap.entries.size() +
                   sequence.markers.size());
+    const MeterEntry* previous = nullptr;
     for (const MeterEntry& m : sequence.meterMap.entries) {
+        // A meter entry that only restates the meter (Cakewalk makes one at every key change) is
+        // not exported, as Cakewalk does not export it either.
+        if (previous != nullptr && previous->numerator == m.numerator &&
+            previous->denominatorLog2 == m.denominatorLog2) {
+            continue;
+        }
+        previous = &m;
         // MIDI clocks per metronome click: 24 per quarter note, scaled by the denominator.
         const std::uint8_t clocks = bytes::u8(96 / m.denominator());
         items.push_back({sequence.meterMap.measureStart(m.measure), kOrderTimeSig,
@@ -344,6 +352,15 @@ void importTrack(Sequence& sequence, Reader& r, const int streamNumber, const bo
                     } else {
                         keys.push_back(k);
                         std::ranges::sort(keys, {}, &KeyEntry::measure);
+                    }
+                    // Cakewalk keeps meter and key in one list, so a key change is also a meter
+                    // entry (restating the meter in force).
+                    auto& entries = sequence.meterMap.entries;
+                    if (std::ranges::find(entries, k.measure, &MeterEntry::measure) == entries.end()) {
+                        MeterEntry m = sequence.meterMap.atMeasure(k.measure);
+                        m.measure = k.measure;
+                        entries.push_back(m);
+                        std::ranges::sort(entries, {}, &MeterEntry::measure);
                     }
                 }
                 break;

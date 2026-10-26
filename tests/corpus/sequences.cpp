@@ -662,12 +662,49 @@ CorpusSequence quant() {
     return c;
 }
 
+CorpusSequence xpose() {
+    CorpusSequence c{"XPOSE",
+                     "Edit/Transpose test bed: every key 0..127, key aftertouch and other kinds, a chromatic "
+                     "octave in C major, D major (measure 3) and E-flat major (measure 5)",
+                     {}};
+    Sequence& s = c.sequence;
+    // Cakewalk keeps meter and key in one list (METERKEY), so a key change is also a meter entry.
+    setMeter(s, 1, 4, 2);
+    setMeter(s, 3, 4, 2);
+    setMeter(s, 5, 4, 2);
+    setKey(s, 1, 0);
+    setKey(s, 3, 2);
+    setKey(s, 5, -3);
+    Stream& chrom = newStream(s, 0, "Chromatic", 0, 0);
+    chrom.patch.reset();
+    for (int k = 0; k < 128; ++k) {
+        chrom.events.push_back(Event::note(Tick{k} * 30, 0, k, 100, 20));
+    }
+    Stream& oth = newStream(s, 1, "Other kinds", 1, 0);
+    oth.patch.reset();
+    oth.events.push_back(Event::keyAftertouch(0, 1, 0, 80));
+    oth.events.push_back(Event::keyAftertouch(30, 1, 60, 80));
+    oth.events.push_back(Event::keyAftertouch(60, 1, 127, 80));
+    oth.events.push_back(Event::patch(90, 1, 5));
+    oth.events.push_back(Event::controller(120, 1, 7, 100));
+    oth.events.push_back(Event::channelAftertouch(150, 1, 90));
+    oth.events.push_back(Event::pitchWheel(180, 1, 1000));
+    Stream& dia = newStream(s, 2, "Diatonic", 2, 0);
+    dia.patch.reset();
+    for (int m = 0; m < 3; ++m) { // measures 1, 3, 5: one chromatic octave from C5 at 40-tick spacing
+        for (int k = 0; k < 12; ++k) {
+            dia.events.push_back(Event::note(Tick{m} * 960 + Tick{k} * 40, 2, 60 + k, 100, 30));
+        }
+    }
+    return c;
+}
+
 } // namespace
 
 std::vector<CorpusSequence> allSequences() {
-    return {synMinimal(),  synKinds(),     synParams(),    synMaps(),      synOverlap(), synDense(),
-            synStrings(),  synWave(),      rowBoat(),      frereJacques(), odeToJoy(),   jingleBells(),
-            silentNight(), greensleeves(), amazingGrace(), twinkle(),      furElise(),   quant()};
+    return {synMinimal(),   synKinds(), synParams(),    synMaps(),  synOverlap(),  synDense(),    synStrings(),
+            synWave(),      rowBoat(),  frereJacques(), odeToJoy(), jingleBells(), silentNight(), greensleeves(),
+            amazingGrace(), twinkle(),  furElise(),     quant(),    xpose()};
 }
 
 } // namespace sseq::corpus

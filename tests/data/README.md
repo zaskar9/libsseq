@@ -47,13 +47,27 @@ memory, so they are not authoritative editions).
 | `TWINKLE.WRK` | Twinkle, Twinkle, Little Star (French traditional, 18th c.) with block chords and varied velocities |
 | `FURELISE.WRK` | Fuer Elise, opening (Beethoven, WoO 59, 1810) in 3/8 for two hands |
 | `QUANT.WRK` | Edit/Quantize test bed: every start offset in a half note, durations 1..75 and around multiples of a sixteenth, one event of every MIDI kind off the grid |
+| `XPOSE.WRK` | Edit/Transpose test bed: every key 0..127, key aftertouch and other kinds, a chromatic octave in C major, D major (measure 3) and E-flat major (measure 5) |
 
 ## Edit oracles
 
-Each file in `edit/` is `src/QUANT.WRK` after one Edit > Quantize with all four tracks selected
-(`tests/edit_tests.cpp` lists the settings): `QUANT_16` sixteenth, `QUANT_32` thirty-second,
-`QUANT_8T` eighth triplet, `QUANT_ST` starting times only, `QUANT_DU` durations only, `QUANT_50`
-strength 50 %, `QUANT_RG` From 2:01:000 Thru 3:01:000 only.
+Each file in `edit/` is a source sequence after one Edit command, with all tracks selected (Mark >
+Select All) unless a From/Thru is given; `tests/edit_tests.cpp` lists every setting.
+
+- Quantize on `QUANT.WRK`: `QUANT_16` sixteenth, `QUANT_32` thirty-second, `QUANT_8T` eighth
+  triplet, `QUANT_ST` starting times only, `QUANT_DU` durations only, `QUANT_50` strength 50 %,
+  `QUANT_RG` From 2:01:000 Thru 3:01:000.
+- Length on `QUANT.WRK`: `LEN_50S` starts 50 %, `LEN_150B` both 150 %, `LEN_33B` both 33 %,
+  `LEN_175D` durations 175 %, `LEN_50RG` both 50 % From 2:01:000 Thru 3:01:000.
+- Transpose on `XPOSE.WRK`: `XPOSE_P5`, `_M7`, `_P100`, `_M100` half-steps; `XPOSE_D1`, `_D2`,
+  `_DM3`, `_D7` diatonic steps.
+- Slide on `QUANT.WRK`: `SLIDE_M1` +1 measure, `SLIDE_T100` +100 ticks and `SLIDE_TM200` -200
+  ticks From 2:01:000 Thru 3:01:000, `SLIDE_TM600` -600 ticks on that region (clamped to -480),
+  `SLIDE_MM1` -1 measure from the start (nothing happens).
+- Controller fill on `QUANT.WRK` into track 1 (`CFILL_7` CC7 0..127 over 1:01:000..1:02:000,
+  `CFILL_7D` the same downwards, `CFILL_PW` wheel -8192..8191 over a measure, `CFILL_1` CC1 100..20
+  over ten ticks) and into track 4 (`CFILL_7B` CC7 50..60 on channel 4 over thirty ticks, replacing
+  the CC7 at tick 17; `CFILL_7C` the same on channel 5, leaving it).
 
 ## Limits of Cakewalk Apprentice 1.04 found while building the corpus
 
@@ -68,7 +82,9 @@ records carry stale bytes in the fields their kind does not use: a Patch event t
 import (not at tick 0, so not absorbed into the track's patch) has 1 in the 16-bit duration field,
 and a Channel aftertouch event has the previous key aftertouch's pressure in data2. libsseq keeps
 these fields as read so that the files round-trip, and the corpus test compares only the fields a
-kind uses. The TRACK chunk holds the name
+kind uses. Events inserted by Edit > Controller fill carry the same 1 in the duration field.
+Edit > Slide clamps the amount so that the region does not move before 1:1:000 instead of showing
+the error message its help describes. The TRACK chunk holds the name
 split into two 15-character fields; names longer than 30 characters survive only through the
 TRKNAME chunk. libsseq itself has none of these limits; the corpus stays within them so that
 every sequence has an oracle, and the corpus test encodes the padding and the frame rounding as

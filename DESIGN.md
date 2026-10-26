@@ -69,7 +69,7 @@ the application (WCWLITE.EXE). They are kept in their own namespaces so the boun
 | libsseq | In the original | Why it is here |
 |---|---|---|
 | `sseq::display` (`display.hpp`): key names, duration text, event kind names, General MIDI names, Event-list columns | the Event list and Track/Measure views, the string table, PATCHES.INI | pure functions of the model, pinned down by Event-list screenshots; the same text is needed by every view and platform |
-| `sseq::edit` (`edit.hpp`, v0.5): Quantize; planned: Length, Transpose, Slide, Controller fill, Interpolate, cut/copy/paste with the event filter | the Edit menu (`edit1.c`, `cv.c`, `evtfilt.c`); the engine offers only `SeqInsertRange`, `SeqDeleteRange`, `SeqDisplaceEarlier/Later`, `SeqTemporalSort`, `SeqRescaleTime` | pure data transformations whose exact arithmetic is established with Cakewalk Apprentice 1.04 oracles under Wine and tested here on Linux; reusable from any client |
+| `sseq::edit` (`edit.hpp`, v0.5/0.6): Quantize, Length, Transpose, Slide, Controller fill; planned: cut/copy/paste with the event filter | the Edit menu (`edit1.c`, `cv.c`, `evtfilt.c`); the engine offers only `SeqInsertRange`, `SeqDeleteRange`, `SeqDisplaceEarlier/Later`, `SeqTemporalSort`, `SeqRescaleTime` | pure data transformations whose exact arithmetic is established with Cakewalk Apprentice 1.04 oracles under Wine and tested here on Linux; reusable from any client |
 
 The device layer goes the other way: `SeqConfigMidi`, `SeqGetPortName`, the timer and the
 `midiIn`/`midiOut` calls are inside TTSSEQ, but in libsseq they belong to the application
@@ -91,6 +91,14 @@ The device layer goes the other way: `SeqConfigMidi`, `SeqGetPortName`, the time
   verbatim. This gives a byte-identical round trip for every reference file, including the
   DOS-era ones with legacy chunks. `Normalize` mode writes the chunk order Cakewalk
   uses and drops legacy chunks, which is what Cakewalk itself does on save.
+
+Key signatures: Cakewalk keeps meter and key in one list (the METERKEY chunk), so in its model a
+key change is also a meter entry restating the meter in force. libsseq keeps `meterMap` and
+`keyMap` apart, but follows that rule where the maps come from Cakewalk: the WRK reader takes the
+meter entries from the METER chunk (which has one at every key change), the SMF import adds a
+meter entry at every key signature, and the SMF export writes a time signature only where the
+meter actually changes, as Cakewalk's does. A sequence built in code should define a meter entry
+at each key change to round-trip unchanged (the corpus does).
 
 ## 4. File formats
 
@@ -131,7 +139,7 @@ the kind names (`Note`, `KeyAft`, `ChanAft`, `Contrl`, `Patch`, `Wheel`, `Sysx`,
 names come from the General MIDI level 1 list in the MIDI specification, not from Cakewalk's
 PATCHES.INI. SMPTE display rounds to the nearest frame, as the Event list does.
 
-## 4b. Editing (v0.5)
+## 4b. Editing (v0.5, v0.6)
 
 `sseq::edit` holds the Edit menu's commands as pure transformations of a `Sequence`. Each takes a
 `Selection` (stream numbers and a From..Thru range; an event is selected by its start time, both
@@ -150,6 +158,31 @@ Quantize, as established with Cakewalk Apprentice 1.04 at 120 ppq (`tests/data/e
   `res - 1` and never exactly a multiple ("so that notes do not run into each other", the help
   says). Strength does not apply to durations.
 - Without the event filter only notes are touched; other kinds keep their times.
+
+Length (v0.6): start times become `from + scale(t - from)` and note durations `scale(d)`, with
+`scale(x) = (x * percent + 50) / 100` (nearest, half up; no minimum, so 1 at 33 % is 0). Every
+event kind is affected by default. Events after Thru do not move.
+
+Transpose (v0.6): Note and KeyAft keys move by half-steps; a result outside 0..127 is moved by
+octaves back in (127 + 5 = 120, 0 - 7 = 5). With "Diatonic math" the amount is in steps of the
+major scale of the key signature at the event's measure: the half-step distance from the tonic
+(`alterations * 7 mod 12`) maps to a degree by Cakewalk's table `0 1 1 2 2 3 3 4 4 5 6 6` (the
+non-scale tones at 1 and 3 half-steps go to the degree above, 6 and 8 to the one below, 10 to the
+one above), the steps are added, and the degree becomes a key again; the same folding applies.
+
+Slide (v0.6): the region's events move by the amount; "Measures" means lengths of the measure at
+From (`measuresToTicks`, verified with a constant meter only). The amount is clamped to `-from`,
+so a region never moves before 1:1:000; Cakewalk Apprentice 1.04 does this silently, although its
+help promises an error message.
+
+Controller fill (v0.6): into one stream (the current track in Cakewalk). Events of the same kind,
+controller number and channel in From..Thru are removed. Then the values from Begin to End are
+walked one by one and each is placed at `from + floor(|v - begin| * (thru - from) / |end - begin|)`;
+a value whose tick is already taken is skipped. So 0..127 over 120 ticks gives 121 events (no 1,
+no 19, ...), 50..60 over 30 ticks gives 11 events three ticks apart, and -8192..8191 over 480
+ticks gives one wheel event per tick. New events go before existing ones on the same tick.
+Cakewalk writes 1 into the unused duration field of the events it inserts (as its MIDI import
+does); libsseq writes 0 and the comparison ignores the field.
 
 ## 5. Engine (v0.2)
 
@@ -257,9 +290,10 @@ the input path and whatever wrapper it wants on its side.
   checks the generator is reproducible, the Cakewalk files round-trip byte for byte, the model
   read from them equals the sequence they were generated from, and export and import agree with
   Cakewalk's. `tests/data/README.md` has the provenance; `gencorpus` regenerates `src/`.
-- Edit tests (`tests/edit_tests.cpp`, data in `tests/data/edit/`): the quantize arithmetic and
-  selection rules on hand-built sequences, then every Edit > Quantize oracle (`QUANT.WRK` after
-  Cakewalk's own command with the listed settings) compared event by event with ours.
+- Edit tests (`tests/edit_tests.cpp`, data in `tests/data/edit/`): the arithmetic and selection
+  rules of every Edit command on hand-built sequences, then every oracle (`QUANT.WRK` or
+  `XPOSE.WRK` after Cakewalk's own command with the listed settings) compared event by event
+  with ours.
 - `sseqtool dump|info|roundtrip|convert|normalize`.
 - Swift consumption: a thin C API or Swift C++ interop (Xcode 15+) wrapped in a SwiftPM
   package is the next step for the app.

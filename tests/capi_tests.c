@@ -356,12 +356,41 @@ static void test_quantize(void) {
     CHECK(sseq_stream_event(s, t0, 1, &e) && e.time == 240 && e.duration == 59);
     CHECK(sseq_stream_event(s, t1, 0, &e) && e.time == 30);
     CHECK(sseq_quantize(s, NULL, &o) == -1);
+    /* Length, Transpose, Slide on the same two streams (t0: 30/29 and 240/59; t1: 30). */
+    CHECK(sseq_scale_ticks(241, 50) == 121);
+    sseq_length_options lo = {1, 1, 50, 0};
+    CHECK(sseq_length(s, &all, &lo) == 3);
+    CHECK(sseq_stream_event(s, t0, 1, &e) && e.time == 120 && e.duration == 30); /* 59 * 0.5 = 29.5 -> 30 */
+    CHECK(sseq_stream_event(s, t0, 0, &e) && e.time == 15 && e.duration == 15);
+    CHECK(sseq_transpose_key(123, 5) == 116);
+    CHECK(sseq_transpose_key_diatonic(61, 1, 0) == 64);
+    sseq_transpose_options to = {-3, 1, 0};
+    CHECK(sseq_transpose(s, &all, &to) == 3);
+    CHECK(sseq_stream_event(s, t0, 0, &e) && e.data1 == 55); /* C5 down three scale steps: G4 */
+    CHECK(sseq_stream_event(s, t0, 1, &e) && e.data1 == 59); /* E5 -> B4 */
+    CHECK(sseq_measures_to_ticks(s, 0, 2) == 960);
+    sseq_slide_options so = {-100, 0};
+    CHECK(sseq_slide(s, &all, &so) == 0); /* From is 0: clamped to 0, nothing moves */
+    CHECK(sseq_stream_event(s, t0, 0, &e) && e.time == 15);
+    so.amount = 100;
+    CHECK(sseq_slide(s, &all, &so) == 3);
+    CHECK(sseq_stream_event(s, t0, 1, &e) && e.time == 220);
+    /* Controller fill: 50..60 over 30 ticks on stream t1 gives 11 events, one every 3 ticks. */
+    sseq_controller_fill_options fo = {7, 0, 50, 60, 0, 30};
+    CHECK(sseq_controller_fill(s, t1, &fo) == 11);
+    CHECK(sseq_stream_event(s, t1, 1, &e) && e.time == 3 && e.kind == SSEQ_EVENT_CONTROLLER && e.data2 == 51);
+    fo.controller = -1;
+    fo.begin = -8192;
+    fo.end = 8191;
+    CHECK(sseq_controller_fill(s, t1, &fo) == 31);
+    CHECK(sseq_stream_event(s, t1, 0, &e) && e.kind == SSEQ_EVENT_PITCH_WHEEL && e.data1 == -8192);
+    CHECK(sseq_controller_fill(s, 99, &fo) == -1);
     sseq_sequence_free(s);
 }
 
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
-    CHECK(strcmp(sseq_version(), "0.5.1") == 0);
+    CHECK(strcmp(sseq_version(), "0.6.0") == 0);
     CHECK(strcmp(sseq_last_error(), "") == 0);
     test_sequence_and_files(dir);
     {

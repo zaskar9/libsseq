@@ -30,7 +30,7 @@ typedef struct sseq_sequence sseq_sequence;
 typedef struct sseq_transport sseq_transport;
 typedef struct sseq_recorder sseq_recorder;
 
-const char* sseq_version(void); /* "0.5.1" */
+const char* sseq_version(void); /* "0.6.0" */
 /* The message of the last failure on this thread ("" when there was none). */
 const char* sseq_last_error(void);
 
@@ -308,6 +308,55 @@ sseq_tick sseq_quantize_time(sseq_tick time, sseq_tick resolution, int strength)
 sseq_tick sseq_quantize_duration(sseq_tick duration, sseq_tick resolution);
 /* Edit > Quantize on the region; returns the number of events changed (-1 on a bad argument). */
 int sseq_quantize(sseq_sequence* sequence, const sseq_selection* selection, const sseq_quantize_options* options);
+
+typedef struct {
+    int start_times; /* "Starting times": distances from the region's From scale */
+    int durations;   /* "Durations" (notes) */
+    int percent;     /* "Percent" */
+    uint32_t kinds;  /* event kinds to touch; 0 = every kind */
+} sseq_length_options;
+
+/* ticks * percent / 100, rounded to nearest with half up. */
+sseq_tick sseq_scale_ticks(sseq_tick ticks, int percent);
+/* Edit > Length on the region; returns the number of events changed (-1 on a bad argument). */
+int sseq_length(sseq_sequence* sequence, const sseq_selection* selection, const sseq_length_options* options);
+
+typedef struct {
+    int amount;     /* half-steps, or scale steps when diatonic */
+    int diatonic;   /* "Diatonic math" */
+    uint32_t kinds; /* event kinds to touch; 0 = notes and key aftertouch */
+} sseq_transpose_options;
+
+/* A key moved by half-steps, then by octaves back into 0..127; and by major-scale steps in the
+ * key with `alterations` sharps (negative: flats), Cakewalk's way (see edit.hpp). */
+int sseq_transpose_key(int key, int half_steps);
+int sseq_transpose_key_diatonic(int key, int steps, int alterations);
+/* Edit > Transpose on the region; returns the number of events changed (-1 on a bad argument). */
+int sseq_transpose(sseq_sequence* sequence, const sseq_selection* selection, const sseq_transpose_options* options);
+
+typedef struct {
+    sseq_tick amount; /* ticks, negative = earlier; clamped so the region cannot start before 0 */
+    uint32_t kinds;   /* event kinds to touch; 0 = every kind */
+} sseq_slide_options;
+
+/* The Slide dialog's "Measures" amount in ticks: lengths of the measure at `from`. */
+sseq_tick sseq_measures_to_ticks(const sseq_sequence* sequence, sseq_tick from, int measures);
+/* Edit > Slide on the region; returns the number of events changed (-1 on a bad argument). */
+int sseq_slide(sseq_sequence* sequence, const sseq_selection* selection, const sseq_slide_options* options);
+
+typedef struct {
+    int controller;  /* 0..119, or -1 for the pitch wheel ("What") */
+    uint8_t channel; /* 0-based */
+    int begin;       /* "Value range": 0..127, or -8192..8191 for the wheel */
+    int end;
+    sseq_tick from; /* "Time range", both inclusive */
+    sseq_tick thru;
+} sseq_controller_fill_options;
+
+/* Edit > Controller fill into the stream at `index` (Cakewalk fills the current track): same-kind
+ * events on the channel in the range are replaced by one event per value, each at the tick the
+ * line reaches it (see edit.hpp). Returns the number of events inserted (-1 on a bad argument). */
+int sseq_controller_fill(sseq_sequence* sequence, int index, const sseq_controller_fill_options* options);
 
 /* ---------------------------------------------------------------- sysex banks */
 

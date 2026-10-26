@@ -219,7 +219,7 @@ int toData(const std::vector<std::uint8_t>& bytes, sseq_data* out) {
 extern "C" {
 
 const char* sseq_version(void) {
-    return "0.5.1";
+    return "0.6.0";
 }
 
 const char* sseq_last_error(void) {
@@ -978,6 +978,83 @@ int sseq_quantize(sseq_sequence* sequence, const sseq_selection* selection, cons
     o.strength = options->strength;
     applyKinds(options->kinds, o.filter);
     return sseq::edit::quantize(sequence->sequence, sel, o);
+}
+
+sseq_tick sseq_scale_ticks(const sseq_tick ticks, const int percent) {
+    return sseq::edit::scaleTicks(ticks, percent);
+}
+
+int sseq_length(sseq_sequence* sequence, const sseq_selection* selection, const sseq_length_options* options) {
+    sseq::edit::Selection sel;
+    if (options == nullptr || !toSelection(sequence, selection, sel)) {
+        setError("null argument");
+        return -1;
+    }
+    sseq::edit::LengthOptions o;
+    o.startTimes = options->start_times != 0;
+    o.durations = options->durations != 0;
+    o.percent = options->percent;
+    applyKinds(options->kinds, o.filter);
+    return sseq::edit::length(sequence->sequence, sel, o);
+}
+
+int sseq_transpose_key(const int key, const int half_steps) {
+    return sseq::edit::transposeKey(key, half_steps);
+}
+
+int sseq_transpose_key_diatonic(const int key, const int steps, const int alterations) {
+    return sseq::edit::transposeKeyDiatonic(key, steps, alterations);
+}
+
+int sseq_transpose(sseq_sequence* sequence, const sseq_selection* selection, const sseq_transpose_options* options) {
+    sseq::edit::Selection sel;
+    if (options == nullptr || !toSelection(sequence, selection, sel)) {
+        setError("null argument");
+        return -1;
+    }
+    sseq::edit::TransposeOptions o;
+    o.amount = options->amount;
+    o.diatonic = options->diatonic != 0;
+    applyKinds(options->kinds, o.filter);
+    return sseq::edit::transpose(sequence->sequence, sel, o);
+}
+
+sseq_tick sseq_measures_to_ticks(const sseq_sequence* sequence, const sseq_tick from, const int measures) {
+    if (sequence == nullptr) {
+        setError("null argument");
+        return 0;
+    }
+    return sseq::edit::measuresToTicks(sequence->sequence, from, measures);
+}
+
+int sseq_slide(sseq_sequence* sequence, const sseq_selection* selection, const sseq_slide_options* options) {
+    sseq::edit::Selection sel;
+    if (options == nullptr || !toSelection(sequence, selection, sel)) {
+        setError("null argument");
+        return -1;
+    }
+    sseq::edit::SlideOptions o;
+    o.amount = options->amount;
+    applyKinds(options->kinds, o.filter);
+    return sseq::edit::slide(sequence->sequence, sel, o);
+}
+
+int sseq_controller_fill(sseq_sequence* sequence, const int index, const sseq_controller_fill_options* options) {
+    sseq::Stream* t = streamAt(sequence, index);
+    if (t == nullptr || options == nullptr) {
+        setError("null argument");
+        return -1;
+    }
+    sseq::edit::ControllerFillOptions o;
+    if (options->controller >= 0) {
+        o.controller = options->controller;
+    }
+    o.channel = options->channel;
+    o.begin = options->begin;
+    o.end = options->end;
+    o.from = options->from;
+    o.thru = options->thru;
+    return sseq::edit::controllerFill(*t, o);
 }
 
 // ---------------------------------------------------------------- sysex banks
