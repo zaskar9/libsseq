@@ -341,7 +341,7 @@ static void test_quantize(void) {
     sseq_stream_insert_event(s, t0, &a);
     sseq_stream_insert_event(s, t0, &c);
     sseq_stream_insert_event(s, t1, &b);
-    sseq_quantize_options o = {30, 1, 1, 100, 0};
+    sseq_quantize_options o = {30, 1, 1, 100, NULL};
     /* Only stream 1, only the first note's time range. */
     int streams[1] = {t0};
     sseq_selection sel = {streams, 1, 0, 100};
@@ -358,23 +358,36 @@ static void test_quantize(void) {
     CHECK(sseq_quantize(s, NULL, &o) == -1);
     /* Length, Transpose, Slide on the same two streams (t0: 30/29 and 240/59; t1: 30). */
     CHECK(sseq_scale_ticks(241, 50) == 121);
-    sseq_length_options lo = {1, 1, 50, 0};
+    sseq_length_options lo = {1, 1, 50, NULL};
     CHECK(sseq_length(s, &all, &lo) == 3);
     CHECK(sseq_stream_event(s, t0, 1, &e) && e.time == 120 && e.duration == 30); /* 59 * 0.5 = 29.5 -> 30 */
     CHECK(sseq_stream_event(s, t0, 0, &e) && e.time == 15 && e.duration == 15);
     CHECK(sseq_transpose_key(123, 5) == 116);
     CHECK(sseq_transpose_key_diatonic(61, 1, 0) == 64);
-    sseq_transpose_options to = {-3, 1, 0};
+    sseq_transpose_options to = {-3, 1, NULL};
     CHECK(sseq_transpose(s, &all, &to) == 3);
     CHECK(sseq_stream_event(s, t0, 0, &e) && e.data1 == 55); /* C5 down three scale steps: G4 */
     CHECK(sseq_stream_event(s, t0, 1, &e) && e.data1 == 59); /* E5 -> B4 */
     CHECK(sseq_measures_to_ticks(s, 0, 2) == 960);
-    sseq_slide_options so = {-100, 0};
+    sseq_slide_options so = {-100, NULL};
     CHECK(sseq_slide(s, &all, &so) == 0); /* From is 0: clamped to 0, nothing moves */
     CHECK(sseq_stream_event(s, t0, 0, &e) && e.time == 15);
     so.amount = 100;
     CHECK(sseq_slide(s, &all, &so) == 3);
     CHECK(sseq_stream_event(s, t0, 1, &e) && e.time == 220);
+    /* The event filter: a key range on notes, and the uncovered kinds always pass. */
+    sseq_event_filter f;
+    sseq_event_filter_all(&f);
+    CHECK(f.kinds == 0x3ffu && f.pitch_wheel_value.min == -8192 && f.note_duration.max == 65535);
+    f.note_key.min = 60;
+    f.note_key.max = 60;
+    CHECK(sseq_event_filter_includes(&f, s, t0, 0) == 0); /* G4 (55) */
+    f.note_key.exclude = 1;
+    CHECK(sseq_event_filter_includes(&f, s, t0, 0) == 1);
+    sseq_event_filter_nothing(&f);
+    CHECK((f.kinds & (1u << SSEQ_EVENT_NOTE)) == 0 && (f.kinds & (1u << SSEQ_EVENT_TEXT)) != 0);
+    so.filter = &f;
+    CHECK(sseq_slide(s, &all, &so) == 0); /* nothing passes */
     /* Controller fill: 50..60 over 30 ticks on stream t1 gives 11 events, one every 3 ticks. */
     sseq_controller_fill_options fo = {7, 0, 50, 60, 0, 30};
     CHECK(sseq_controller_fill(s, t1, &fo) == 11);

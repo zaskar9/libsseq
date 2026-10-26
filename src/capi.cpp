@@ -212,6 +212,89 @@ int toData(const std::vector<std::uint8_t>& bytes, sseq_data* out) {
     return 1;
 }
 
+/// Turns the C selection (stream indices) into the library's (stream numbers).
+bool toSelection(const sseq_sequence* s, const sseq_selection* selection, sseq::edit::Selection& out) {
+    if (s == nullptr || selection == nullptr) {
+        setError("null argument");
+        return false;
+    }
+    out.from = selection->from;
+    out.thru = selection->thru;
+    out.streams.clear();
+    if (selection->streams == nullptr) {
+        for (const sseq::Stream& t : s->sequence.streams) {
+            out.streams.push_back(t.number);
+        }
+        return true;
+    }
+    for (std::size_t i = 0; i < selection->stream_count; ++i) {
+        const sseq::Stream* t = streamAt(s, selection->streams[i]);
+        if (t == nullptr) {
+            return false;
+        }
+        out.streams.push_back(t->number);
+    }
+    return true;
+}
+
+sseq::edit::ValueRange toRange(const sseq_value_range& r) {
+    return {r.min, r.max, r.exclude != 0};
+}
+
+sseq_value_range fromRange(const sseq::edit::ValueRange& r) {
+    return {r.min, r.max, r.exclude ? 1 : 0};
+}
+
+sseq::edit::EventFilter toFilter(const sseq_event_filter& f) {
+    sseq::edit::EventFilter out;
+    for (std::size_t k = 0; k < out.kinds.size(); ++k) {
+        out.kinds[k] = (f.kinds & (1U << k)) != 0;
+    }
+    out.noteKey = toRange(f.note_key);
+    out.noteVelocity = toRange(f.note_velocity);
+    out.noteDuration = toRange(f.note_duration);
+    out.keyAftertouchKey = toRange(f.key_aftertouch_key);
+    out.keyAftertouchValue = toRange(f.key_aftertouch_value);
+    out.controllerNumber = toRange(f.controller_number);
+    out.controllerValue = toRange(f.controller_value);
+    out.patchNumber = toRange(f.patch_number);
+    out.channelAftertouchAmount = toRange(f.channel_aftertouch_amount);
+    out.pitchWheelValue = toRange(f.pitch_wheel_value);
+    out.channel = toRange(f.channel);
+    out.beat = toRange(f.beat);
+    out.tick = toRange(f.tick);
+    return out;
+}
+
+void fromFilter(const sseq::edit::EventFilter& f, sseq_event_filter& out) {
+    out.kinds = 0;
+    for (std::size_t k = 0; k < f.kinds.size(); ++k) {
+        if (f.kinds[k]) {
+            out.kinds |= 1U << k;
+        }
+    }
+    out.note_key = fromRange(f.noteKey);
+    out.note_velocity = fromRange(f.noteVelocity);
+    out.note_duration = fromRange(f.noteDuration);
+    out.key_aftertouch_key = fromRange(f.keyAftertouchKey);
+    out.key_aftertouch_value = fromRange(f.keyAftertouchValue);
+    out.controller_number = fromRange(f.controllerNumber);
+    out.controller_value = fromRange(f.controllerValue);
+    out.patch_number = fromRange(f.patchNumber);
+    out.channel_aftertouch_amount = fromRange(f.channelAftertouchAmount);
+    out.pitch_wheel_value = fromRange(f.pitchWheelValue);
+    out.channel = fromRange(f.channel);
+    out.beat = fromRange(f.beat);
+    out.tick = fromRange(f.tick);
+}
+
+/// Applies the C filter to `filter` when given; NULL keeps the command's default.
+void applyFilter(const sseq_event_filter* f, sseq::edit::EventFilter& filter) {
+    if (f != nullptr) {
+        filter = toFilter(*f);
+    }
+}
+
 } // namespace
 
 // ---------------------------------------------------------------- basics
@@ -914,44 +997,27 @@ void sseq_event_values_text(const sseq_event* event, const uint8_t* payload, con
 
 // ---------------------------------------------------------------- editing
 
-namespace {
-
-/// Turns the C selection (stream indices) into the library's (stream numbers).
-bool toSelection(const sseq_sequence* s, const sseq_selection* selection, sseq::edit::Selection& out) {
-    if (s == nullptr || selection == nullptr) {
-        setError("null argument");
-        return false;
-    }
-    out.from = selection->from;
-    out.thru = selection->thru;
-    out.streams.clear();
-    if (selection->streams == nullptr) {
-        for (const sseq::Stream& t : s->sequence.streams) {
-            out.streams.push_back(t.number);
-        }
-        return true;
-    }
-    for (std::size_t i = 0; i < selection->stream_count; ++i) {
-        const sseq::Stream* t = streamAt(s, selection->streams[i]);
-        if (t == nullptr) {
-            return false;
-        }
-        out.streams.push_back(t->number);
-    }
-    return true;
-}
-
-/// Applies the C kind mask to `filter`; 0 keeps the command's default.
-void applyKinds(const uint32_t kinds, sseq::edit::EventFilter& filter) {
-    if (kinds == 0) {
-        return;
-    }
-    for (std::size_t k = 0; k < filter.kinds.size(); ++k) {
-        filter.kinds[k] = (kinds & (1U << k)) != 0;
+void sseq_event_filter_all(sseq_event_filter* out) {
+    if (out != nullptr) {
+        fromFilter(sseq::edit::EventFilter::all(), *out);
     }
 }
 
-} // namespace
+void sseq_event_filter_nothing(sseq_event_filter* out) {
+    if (out != nullptr) {
+        fromFilter(sseq::edit::EventFilter::nothing(), *out);
+    }
+}
+
+int sseq_event_filter_includes(const sseq_event_filter* filter, const sseq_sequence* sequence, const int index,
+                               const size_t event_index) {
+    const sseq::Stream* t = streamAt(sequence, index);
+    if (filter == nullptr || t == nullptr || event_index >= t->events.size()) {
+        setError("bad argument");
+        return 0;
+    }
+    return toFilter(*filter).includes(t->events[event_index], sequence->sequence.meterMap) ? 1 : 0;
+}
 
 sseq_tick sseq_resolution_ticks(const sseq_resolution resolution, const int ppq) {
     return sseq::edit::resolutionTicks(static_cast<sseq::edit::Resolution>(resolution), ppq);
@@ -976,7 +1042,7 @@ int sseq_quantize(sseq_sequence* sequence, const sseq_selection* selection, cons
     o.startTimes = options->start_times != 0;
     o.durations = options->durations != 0;
     o.strength = options->strength;
-    applyKinds(options->kinds, o.filter);
+    applyFilter(options->filter, o.filter);
     return sseq::edit::quantize(sequence->sequence, sel, o);
 }
 
@@ -994,7 +1060,7 @@ int sseq_length(sseq_sequence* sequence, const sseq_selection* selection, const 
     o.startTimes = options->start_times != 0;
     o.durations = options->durations != 0;
     o.percent = options->percent;
-    applyKinds(options->kinds, o.filter);
+    applyFilter(options->filter, o.filter);
     return sseq::edit::length(sequence->sequence, sel, o);
 }
 
@@ -1015,7 +1081,7 @@ int sseq_transpose(sseq_sequence* sequence, const sseq_selection* selection, con
     sseq::edit::TransposeOptions o;
     o.amount = options->amount;
     o.diatonic = options->diatonic != 0;
-    applyKinds(options->kinds, o.filter);
+    applyFilter(options->filter, o.filter);
     return sseq::edit::transpose(sequence->sequence, sel, o);
 }
 
@@ -1035,7 +1101,7 @@ int sseq_slide(sseq_sequence* sequence, const sseq_selection* selection, const s
     }
     sseq::edit::SlideOptions o;
     o.amount = options->amount;
-    applyKinds(options->kinds, o.filter);
+    applyFilter(options->filter, o.filter);
     return sseq::edit::slide(sequence->sequence, sel, o);
 }
 

@@ -699,12 +699,43 @@ CorpusSequence xpose() {
     return c;
 }
 
+CorpusSequence efilt() {
+    CorpusSequence c{"EFILT",
+                     "Event filter test bed: one stream per field, 60 events each at off-grid ticks "
+                     "(n * 240 + n) with the filtered value running over n",
+                     {}};
+    Sequence& s = c.sequence;
+    const auto at = [](const int n) { return Tick{n} * 240 + n; };
+    const std::array<const char*, 9> names{"Velocity",       "Key",   "Duration",           "Controller",
+                                           "Key aftertouch", "Patch", "Channel aftertouch", "Wheel",
+                                           "Channels"};
+    for (int i = 0; i < 9; ++i) { // all streams first: references into `streams` must not dangle
+        Stream& t = s.stream(i);
+        t.name = names[static_cast<std::size_t>(i)];
+        if (i < 8) {
+            t.channel = 0;
+        }
+    }
+    for (int n = 0; n < 60; ++n) {
+        s.stream(0).events.push_back(Event::note(at(n), 0, 60, n + 1, 30));
+        s.stream(1).events.push_back(Event::note(at(n), 0, 30 + n, 100, 30));
+        s.stream(2).events.push_back(Event::note(at(n), 0, 60, 100, n + 1));
+        s.stream(3).events.push_back(Event::controller(at(n), 0, n, (n * 2) % 128));
+        s.stream(4).events.push_back(Event::keyAftertouch(at(n), 0, 30 + n, n * 2));
+        s.stream(5).events.push_back(Event::patch(at(n), 0, n));
+        s.stream(6).events.push_back(Event::channelAftertouch(at(n), 0, n * 2));
+        s.stream(7).events.push_back(Event::pitchWheel(at(n), 0, -8192 + n * 277));
+        s.stream(8).events.push_back(Event::note(at(n), static_cast<std::uint8_t>(n % 16), 60, 100, 30));
+    }
+    return c;
+}
+
 } // namespace
 
 std::vector<CorpusSequence> allSequences() {
     return {synMinimal(),   synKinds(), synParams(),    synMaps(),  synOverlap(),  synDense(),    synStrings(),
             synWave(),      rowBoat(),  frereJacques(), odeToJoy(), jingleBells(), silentNight(), greensleeves(),
-            amazingGrace(), twinkle(),  furElise(),     quant(),    xpose()};
+            amazingGrace(), twinkle(),  furElise(),     quant(),    xpose(),       efilt()};
 }
 
 } // namespace sseq::corpus

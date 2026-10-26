@@ -280,6 +280,34 @@ typedef struct {
     sseq_tick thru;
 } sseq_selection;
 
+/* Cakewalk's Event Filter dialog: an inclusive range per field (exclude = the dialog's "Not"),
+ * all required; the channel, beat and tick ranges apply to the six MIDI channel kinds. Sysex,
+ * Text, MCI and Wave events are not covered: a filter from the dialog always passes them. */
+typedef struct {
+    int min;
+    int max;
+    int exclude;
+} sseq_value_range;
+
+typedef struct {
+    uint32_t kinds; /* "Include" bits (1u << sseq_event_kind) */
+    sseq_value_range note_key, note_velocity, note_duration;
+    sseq_value_range key_aftertouch_key, key_aftertouch_value;
+    sseq_value_range controller_number, controller_value;
+    sseq_value_range patch_number;
+    sseq_value_range channel_aftertouch_amount;
+    sseq_value_range pitch_wheel_value;
+    sseq_value_range channel; /* 0-based (the dialog shows 1..16) */
+    sseq_value_range beat;    /* 1-based beat within the measure */
+    sseq_value_range tick;    /* tick within the beat */
+} sseq_event_filter;
+
+void sseq_event_filter_all(sseq_event_filter* out);     /* the dialog's defaults: everything passes */
+void sseq_event_filter_nothing(sseq_event_filter* out); /* the dialog's "Nothing": only the uncovered kinds pass */
+/* Whether the event at `event_index` of the stream passes the filter (beat and tick use the meter). */
+int sseq_event_filter_includes(const sseq_event_filter* filter, const sseq_sequence* sequence, int index,
+                               size_t event_index);
+
 /* The Quantize dialog's resolutions; triplets are two thirds of the straight value. */
 typedef enum {
     SSEQ_RESOLUTION_WHOLE = 0,
@@ -295,11 +323,11 @@ typedef enum {
 sseq_tick sseq_resolution_ticks(sseq_resolution resolution, int ppq); /* sixteenth at 120 ppq = 30 */
 
 typedef struct {
-    sseq_tick resolution; /* ticks */
-    int start_times;      /* "Starting times" */
-    int durations;        /* "Durations" (notes) */
-    int strength;         /* "Percent strength", start times only */
-    uint32_t kinds;       /* event kinds to touch, bits (1u << sseq_event_kind); 0 = notes only */
+    sseq_tick resolution;            /* ticks */
+    int start_times;                 /* "Starting times" */
+    int durations;                   /* "Durations" (notes) */
+    int strength;                    /* "Percent strength", start times only */
+    const sseq_event_filter* filter; /* NULL: notes only */
 } sseq_quantize_options;
 
 /* The arithmetic alone: nearest multiple (exactly half rounds up), moved `strength` percent of the
@@ -310,10 +338,10 @@ sseq_tick sseq_quantize_duration(sseq_tick duration, sseq_tick resolution);
 int sseq_quantize(sseq_sequence* sequence, const sseq_selection* selection, const sseq_quantize_options* options);
 
 typedef struct {
-    int start_times; /* "Starting times": distances from the region's From scale */
-    int durations;   /* "Durations" (notes) */
-    int percent;     /* "Percent" */
-    uint32_t kinds;  /* event kinds to touch; 0 = every kind */
+    int start_times;                 /* "Starting times": distances from the region's From scale */
+    int durations;                   /* "Durations" (notes) */
+    int percent;                     /* "Percent" */
+    const sseq_event_filter* filter; /* NULL: every kind */
 } sseq_length_options;
 
 /* ticks * percent / 100, rounded to nearest with half up. */
@@ -322,9 +350,9 @@ sseq_tick sseq_scale_ticks(sseq_tick ticks, int percent);
 int sseq_length(sseq_sequence* sequence, const sseq_selection* selection, const sseq_length_options* options);
 
 typedef struct {
-    int amount;     /* half-steps, or scale steps when diatonic */
-    int diatonic;   /* "Diatonic math" */
-    uint32_t kinds; /* event kinds to touch; 0 = notes and key aftertouch */
+    int amount;                      /* half-steps, or scale steps when diatonic */
+    int diatonic;                    /* "Diatonic math" */
+    const sseq_event_filter* filter; /* NULL: notes and key aftertouch */
 } sseq_transpose_options;
 
 /* A key moved by half-steps, then by octaves back into 0..127; and by major-scale steps in the
@@ -335,8 +363,8 @@ int sseq_transpose_key_diatonic(int key, int steps, int alterations);
 int sseq_transpose(sseq_sequence* sequence, const sseq_selection* selection, const sseq_transpose_options* options);
 
 typedef struct {
-    sseq_tick amount; /* ticks, negative = earlier; clamped so the region cannot start before 0 */
-    uint32_t kinds;   /* event kinds to touch; 0 = every kind */
+    sseq_tick amount;                /* ticks, negative = earlier; clamped so the region cannot start before 0 */
+    const sseq_event_filter* filter; /* NULL: every kind */
 } sseq_slide_options;
 
 /* The Slide dialog's "Measures" amount in ticks: lengths of the measure at `from`. */

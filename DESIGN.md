@@ -159,6 +159,19 @@ Quantize, as established with Cakewalk Apprentice 1.04 at 120 ppq (`tests/data/e
   says). Strength does not apply to durations.
 - Without the event filter only notes are touched; other kinds keep their times.
 
+Event filter (toward v0.7): Cakewalk's "Use event filter" dialog has an Include box and
+inclusive field ranges, each with a "Not", for the six MIDI channel kinds (Note: key, velocity,
+duration; KeyAft: key, value; Control: number, value; Patch: number; ChanAft: amount; Wheel:
+value), plus channel, beat-within-measure and tick-within-beat ranges for "any kind of event".
+All ranges of a kind must hold. Sysex, Text, MCI and Wave events are not covered and always pass
+a filter made in the dialog, even with "Nothing" or a tick range. `EventFilter` holds all of
+this; `includes(event, meterMap)` evaluates it. Each command keeps its own default filter when
+the dialog is not used.
+
+Order within a tick: after an edit, Cakewalk's order among events on the same tick is not the
+file order (its sort is evidently not stable), so the edit tests compare same-tick events as a
+set. libsseq keeps the file order (stable sort).
+
 Length (v0.6): start times become `from + scale(t - from)` and note durations `scale(d)`, with
 `scale(x) = (x * percent + 50) / 100` (nearest, half up; no minimum, so 1 at 33 % is 0). Every
 event kind is affected by default. Events after Thru do not move.

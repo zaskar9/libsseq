@@ -47,6 +47,7 @@ memory, so they are not authoritative editions).
 | `TWINKLE.WRK` | Twinkle, Twinkle, Little Star (French traditional, 18th c.) with block chords and varied velocities |
 | `FURELISE.WRK` | Fuer Elise, opening (Beethoven, WoO 59, 1810) in 3/8 for two hands |
 | `QUANT.WRK` | Edit/Quantize test bed: every start offset in a half note, durations 1..75 and around multiples of a sixteenth, one event of every MIDI kind off the grid |
+| `EFILT.WRK` | Event filter test bed: one stream per field, 60 events each at off-grid ticks (n * 240 + n) with the filtered value running over n |
 | `XPOSE.WRK` | Edit/Transpose test bed: every key 0..127, key aftertouch and other kinds, a chromatic octave in C major, D major (measure 3) and E-flat major (measure 5) |
 
 ## Edit oracles
@@ -64,6 +65,15 @@ Select All) unless a From/Thru is given; `tests/edit_tests.cpp` lists every sett
 - Slide on `QUANT.WRK`: `SLIDE_M1` +1 measure, `SLIDE_T100` +100 ticks and `SLIDE_TM200` -200
   ticks From 2:01:000 Thru 3:01:000, `SLIDE_TM600` -600 ticks on that region (clamped to -480),
   `SLIDE_MM1` -1 measure from the start (nothing happens).
+- Event filter, through Quantize (starts only, sixteenth) on `QUANT.WRK` (`QUANT_F0` defaults,
+  `_FKEY` key C 5..G 10, `_FKEYN` the same with Not, `_FDUR` duration 30..30, `_FCHAN` channel 1,
+  `_FBEAT` beat 1, `_FTICK` tick 0..59, `_FMIX` wheel -8192..0 and Not controller 7) and on
+  `EFILT.WRK` (`EFILT_VEL` velocity 20..40, `_VELN` with Not, `_KEY` C 5..B 5, `_DUR` 10..20,
+  `_NUM` controller 10..20, `_VAL` value 40..60, `_KA` key aftertouch C 4..B 4 and value 10..30,
+  `_PATCH` 5..15, `_CHA` 10..30, `_WHL` 0..99, `_CHAN` channels 2..5, `_BEAT` 2..3, `_TICK`
+  10..50, `_INCL` Nothing then Note and Wheel), and through Slide (+100 ticks) on `SYN_KIND.WRK`
+  (`SYNK_FDEF` defaults, `_FNONE` Nothing, `_FTICK` tick 10..50: the string and sysex events move
+  in all three).
 - Controller fill on `QUANT.WRK` into track 1 (`CFILL_7` CC7 0..127 over 1:01:000..1:02:000,
   `CFILL_7D` the same downwards, `CFILL_PW` wheel -8192..8191 over a measure, `CFILL_1` CC1 100..20
   over ten ticks) and into track 4 (`CFILL_7B` CC7 50..60 on channel 4 over thirty ticks, replacing
@@ -84,7 +94,10 @@ and a Channel aftertouch event has the previous key aftertouch's pressure in dat
 these fields as read so that the files round-trip, and the corpus test compares only the fields a
 kind uses. Events inserted by Edit > Controller fill carry the same 1 in the duration field.
 Edit > Slide clamps the amount so that the region does not move before 1:1:000 instead of showing
-the error message its help describes. The TRACK chunk holds the name
+the error message its help describes. After an edit, the order of events on the same tick is not
+the file order (an unstable sort), so the edit tests compare same-tick events as a set. Under
+Wine, the Event Filter dialog's numeric fields take at most two typed digits; the oracle settings
+were chosen accordingly and each was confirmed by the outcome. The TRACK chunk holds the name
 split into two 15-character fields; names longer than 30 characters survive only through the
 TRKNAME chunk. libsseq itself has none of these limits; the corpus stays within them so that
 every sequence has an oracle, and the corpus test encodes the padding and the frame rounding as

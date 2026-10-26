@@ -23,6 +23,48 @@ EventFilter EventFilter::only(const EventKind kind) noexcept {
     return f;
 }
 
+EventFilter EventFilter::nothing() noexcept {
+    EventFilter f;
+    f.set(EventKind::Sysex).set(EventKind::MciCommand).set(EventKind::Wave).set(EventKind::Text);
+    return f;
+}
+
+bool EventFilter::includes(const Event& e) const noexcept {
+    if (!includes(e.kind)) {
+        return false;
+    }
+    switch (e.kind) {
+    case EventKind::Note:
+        return noteKey.contains(e.data1) && noteVelocity.contains(e.data2) &&
+               noteDuration.contains(static_cast<int>(std::min<Tick>(e.duration, 65535))) &&
+               channel.contains(e.channel);
+    case EventKind::KeyAftertouch:
+        return keyAftertouchKey.contains(e.data1) && keyAftertouchValue.contains(e.data2) &&
+               channel.contains(e.channel);
+    case EventKind::Controller:
+        return controllerNumber.contains(e.data1) && controllerValue.contains(e.data2) && channel.contains(e.channel);
+    case EventKind::Patch:
+        return patchNumber.contains(e.data1) && channel.contains(e.channel);
+    case EventKind::ChannelAftertouch:
+        return channelAftertouchAmount.contains(e.data1) && channel.contains(e.channel);
+    case EventKind::PitchWheel:
+        return pitchWheelValue.contains(e.data1) && channel.contains(e.channel);
+    default:
+        return true; // Sysex, MCI, Wave, Text: no ranges apply
+    }
+}
+
+bool EventFilter::includes(const Event& e, const MeterMap& meter) const noexcept {
+    if (!includes(e)) {
+        return false;
+    }
+    if (!e.isMidi() || e.kind == EventKind::Sysex) {
+        return true;
+    }
+    const MBT mbt = meter.tickToMBT(e.time);
+    return beat.contains(mbt.beat) && tick.contains(mbt.tick);
+}
+
 Selection Selection::all(const Sequence& sequence) {
     Selection s;
     for (const Stream& t : sequence.streams) {
@@ -91,7 +133,7 @@ int quantize(Sequence& sequence, const Selection& selection, const QuantizeOptio
         }
         bool moved = false;
         for (Event& e : t.events) {
-            if (e.time < selection.from || e.time > selection.thru || !options.filter.includes(e)) {
+            if (e.time < selection.from || e.time > selection.thru || !options.filter.includes(e, sequence.meterMap)) {
                 continue;
             }
             bool touched = false;
@@ -138,7 +180,7 @@ int length(Sequence& sequence, const Selection& selection, const LengthOptions& 
         }
         bool moved = false;
         for (Event& e : t.events) {
-            if (e.time < selection.from || e.time > selection.thru || !options.filter.includes(e)) {
+            if (e.time < selection.from || e.time > selection.thru || !options.filter.includes(e, sequence.meterMap)) {
                 continue;
             }
             bool touched = false;
@@ -213,7 +255,7 @@ int transpose(Sequence& sequence, const Selection& selection, const TransposeOpt
             continue;
         }
         for (Event& e : t.events) {
-            if (e.time < selection.from || e.time > selection.thru || !options.filter.includes(e) ||
+            if (e.time < selection.from || e.time > selection.thru || !options.filter.includes(e, sequence.meterMap) ||
                 (e.kind != EventKind::Note && e.kind != EventKind::KeyAftertouch)) {
                 continue;
             }
@@ -258,7 +300,7 @@ int slide(Sequence& sequence, const Selection& selection, const SlideOptions& op
         }
         bool moved = false;
         for (Event& e : t.events) {
-            if (e.time < selection.from || e.time > selection.thru || !options.filter.includes(e)) {
+            if (e.time < selection.from || e.time > selection.thru || !options.filter.includes(e, sequence.meterMap)) {
                 continue;
             }
             e.time += amount;

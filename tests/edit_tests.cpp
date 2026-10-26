@@ -8,16 +8,29 @@
 #include "check.hpp"
 #include "sseq/sseq.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace fs = std::filesystem;
 using namespace sseq;
 
 namespace {
+
+/// Events in a canonical order: by time, then by the fields. The order Cakewalk leaves among
+/// events on the same tick after an edit is not the file order (its sort is not stable), so it
+/// is not compared.
+std::vector<Event> canonical(std::vector<Event> events) {
+    std::ranges::stable_sort(events, [](const Event& p, const Event& q) {
+        return std::tie(p.time, p.kind, p.channel, p.data1, p.data2) <
+               std::tie(q.time, q.kind, q.channel, q.data1, q.data2);
+    });
+    return events;
+}
 
 /// Compares the events of every stream (time, kind, channel, data, duration).
 void checkSameEvents(const Sequence& ours, const Sequence& theirs, const std::string& what) {
@@ -26,9 +39,11 @@ void checkSameEvents(const Sequence& ours, const Sequence& theirs, const std::st
         const Stream& a = ours.streams[i];
         const Stream& b = theirs.streams[i];
         CHECK_EQ(a.events.size(), b.events.size());
-        for (std::size_t j = 0; j < a.events.size() && j < b.events.size(); ++j) {
-            const Event& x = a.events[j];
-            const Event& y = b.events[j];
+        const std::vector<Event> ea = canonical(a.events);
+        const std::vector<Event> eb = canonical(b.events);
+        for (std::size_t j = 0; j < ea.size() && j < eb.size(); ++j) {
+            const Event& x = ea[j];
+            const Event& y = eb[j];
             // Only the fields a kind uses: Cakewalk leaves 1 in the duration field of events it
             // inserts (Controller fill), as its MIDI import does (tests/data/README.md).
             const bool usesData2 =
@@ -406,6 +421,114 @@ void testControllerFillOracles(const fs::path& data) {
     }
 }
 
+// Event filter oracles: Quantize (starts only, sixteenth) or Slide (+100 ticks) with "Use event
+// filter" and the settings applied by `setup`.
+struct FilterCase {
+    const char* file;
+    const char* source;
+    bool slide;
+    void (*setup)(edit::EventFilter&);
+};
+
+const std::vector<FilterCase> filterCases{
+    {"QUANT_F0", "QUANT", false, [](edit::EventFilter&) {}},
+    {"QUANT_FKEY", "QUANT", false, [](edit::EventFilter& f) { f.noteKey = {60, 127}; }},
+    {"QUANT_FKEYN", "QUANT", false, [](edit::EventFilter& f) { f.noteKey = {60, 127, true}; }},
+    {"QUANT_FDUR", "QUANT", false, [](edit::EventFilter& f) { f.noteDuration = {30, 30}; }},
+    {"QUANT_FCHAN", "QUANT", false, [](edit::EventFilter& f) { f.channel = {0, 0}; }},
+    {"QUANT_FBEAT", "QUANT", false, [](edit::EventFilter& f) { f.beat = {1, 1}; }},
+    {"QUANT_FTICK", "QUANT", false, [](edit::EventFilter& f) { f.tick = {0, 59}; }},
+    {"QUANT_FMIX", "QUANT", false,
+     [](edit::EventFilter& f) {
+         f.pitchWheelValue = {-8192, 0};
+         f.controllerNumber = {7, 7, true};
+     }},
+    {"EFILT_VEL", "EFILT", false, [](edit::EventFilter& f) { f.noteVelocity = {20, 40}; }},
+    {"EFILT_VELN", "EFILT", false, [](edit::EventFilter& f) { f.noteVelocity = {20, 40, true}; }},
+    {"EFILT_KEY", "EFILT", false, [](edit::EventFilter& f) { f.noteKey = {60, 71}; }},
+    {"EFILT_DUR", "EFILT", false, [](edit::EventFilter& f) { f.noteDuration = {10, 20}; }},
+    {"EFILT_NUM", "EFILT", false, [](edit::EventFilter& f) { f.controllerNumber = {10, 20}; }},
+    {"EFILT_VAL", "EFILT", false, [](edit::EventFilter& f) { f.controllerValue = {40, 60}; }},
+    {"EFILT_KA", "EFILT", false,
+     [](edit::EventFilter& f) {
+         f.keyAftertouchKey = {48, 59};
+         f.keyAftertouchValue = {10, 30};
+     }},
+    {"EFILT_PATCH", "EFILT", false, [](edit::EventFilter& f) { f.patchNumber = {5, 15}; }},
+    {"EFILT_CHA", "EFILT", false, [](edit::EventFilter& f) { f.channelAftertouchAmount = {10, 30}; }},
+    {"EFILT_WHL", "EFILT", false, [](edit::EventFilter& f) { f.pitchWheelValue = {0, 99}; }},
+    {"EFILT_CHAN", "EFILT", false, [](edit::EventFilter& f) { f.channel = {1, 4}; }}, // dialog: 2..5
+    {"EFILT_BEAT", "EFILT", false, [](edit::EventFilter& f) { f.beat = {2, 3}; }},
+    {"EFILT_TICK", "EFILT", false, [](edit::EventFilter& f) { f.tick = {10, 50}; }},
+    {"EFILT_INCL", "EFILT", false,
+     [](edit::EventFilter& f) {
+         f = edit::EventFilter::nothing();
+         f.set(EventKind::Note).set(EventKind::PitchWheel);
+     }},
+    {"SYNK_FDEF", "SYN_KIND", true, [](edit::EventFilter&) {}},
+    {"SYNK_FNONE", "SYN_KIND", true, [](edit::EventFilter& f) { f = edit::EventFilter::nothing(); }},
+    {"SYNK_FTICK", "SYN_KIND", true, [](edit::EventFilter& f) { f.tick = {10, 50}; }},
+};
+
+void testEventFilter() {
+    edit::EventFilter f = edit::EventFilter::all();
+    const Event note = Event::note(0, 2, 60, 100, 30);
+    CHECK(f.includes(note));
+    f.noteKey = {61, 127};
+    CHECK(!f.includes(note));
+    f.noteKey = {61, 127, true};
+    CHECK(f.includes(note));
+    f.noteVelocity = {100, 100};
+    CHECK(f.includes(note));
+    f.channel = {0, 1};
+    CHECK(!f.includes(note));
+    f.channel = {2, 2};
+    CHECK(f.includes(note));
+    CHECK(f.includes(Event::textEvent(0, "x")));
+    CHECK(!edit::EventFilter::nothing().includes(note));
+    CHECK(edit::EventFilter::nothing().includes(Event::textEvent(0, "x")));
+    CHECK(edit::EventFilter::nothing().includes(Event::sysex(0, 0)));
+    // Beat and tick need the meter: tick 250 in 4/4 at 120 ppq is beat 3, tick 10.
+    MeterMap meter;
+    edit::EventFilter g = edit::EventFilter::all();
+    const Event late = Event::note(250, 0, 60, 100, 30);
+    g.beat = {3, 3};
+    CHECK(g.includes(late, meter));
+    g.beat = {1, 2};
+    CHECK(!g.includes(late, meter));
+    g.beat = {1, 99};
+    g.tick = {11, 1919};
+    CHECK(!g.includes(late, meter));
+    CHECK(g.includes(Event::textEvent(250, "x"), meter)); // ranges never apply to string events
+}
+
+void testEventFilterOracles(const fs::path& data) {
+    for (const FilterCase& c : filterCases) {
+        const fs::path oracle = data / "edit" / (std::string(c.file) + ".WRK");
+        if (!fs::exists(oracle)) {
+            std::printf("  (no oracle %s)\n", oracle.string().c_str());
+            continue;
+        }
+        Sequence ours = wrk::readFile((data / "src" / (std::string(c.source) + ".WRK")).string());
+        edit::EventFilter f = edit::EventFilter::all();
+        c.setup(f);
+        const edit::Selection sel = edit::Selection::all(ours);
+        if (c.slide) {
+            edit::SlideOptions o;
+            o.amount = 100;
+            o.filter = f;
+            edit::slide(ours, sel, o);
+        } else {
+            edit::QuantizeOptions o;
+            o.resolution = 30;
+            o.durations = false;
+            o.filter = f;
+            edit::quantize(ours, sel, o);
+        }
+        checkSameEvents(ours, wrk::readFile(oracle.string()), c.file);
+    }
+}
+
 void testQuantizeOracles(const fs::path& data) {
     const Sequence source = wrk::readFile((data / "src" / "QUANT.WRK").string());
     for (const QuantizeCase& c : quantizeCases) {
@@ -448,6 +571,8 @@ int main(int argc, char** argv) {
     testSlideOracles(argv[1]);
     testControllerFill();
     testControllerFillOracles(argv[1]);
+    testEventFilter();
+    testEventFilterOracles(argv[1]);
     std::printf("%d checks, %d failures\n", test::checks, test::failures);
     return test::failures == 0 ? 0 : 1;
 }

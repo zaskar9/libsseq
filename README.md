@@ -19,7 +19,7 @@ functional scope of Cakewalk's `TTSSEQ.DLL` sequencer engine. MIT licensed.
   General MIDI program names.
 - Editing as the Edit menu does it, with the arithmetic taken from Cakewalk Apprentice 1.04:
   Quantize, Length, Transpose (chromatic and diatonic), Slide and Controller fill on a selected
-  region, with the event filter's kinds.
+  region, with the Event Filter dialog's kinds and ranges.
 - C API (`sseq/sseq.h`) over all of the above, and a Swift package (`import SSeq`).
 - No dependencies beyond the C++ standard library.
 
@@ -96,6 +96,16 @@ The C header is `include/sseq/sseq.h`; `tests/capi_tests.c` shows every call in 
 ## Status
 
 v0.6: model, formats, display text, engine, recorder, editing (Quantize, Length, Transpose,
-Slide, Controller fill), C API, Swift package, tool, tests. Planned: cut/copy/paste with the event
-filter, checked against Cakewalk Apprentice 1.04. Platform adapters (a
-CoreMIDI sink and clock, for example) belong to the application using the library.
+Slide, Controller fill), C API, Swift package, tool, tests.
+
+Roadmap, one minor version per completed area (each analysed with Cakewalk Apprentice 1.04
+oracles and tested here); patch versions for fixes:
+
+- 0.7, Edit menu complete: the event filter, Cut / Copy / Paste / Paste to One track with
+  "Delete hole" and the tempo and meter/key options, a clipboard representation, one-level undo.
+- 0.8, Track and Mark/GoTo menus: Clone, Kill, Wipe, the parameter commands, markers, Search.
+- 0.9, Staff view and Realtime: notation rules (Fill, Trim, Resolution, layers, spelling by key
+  signature) as display functions, step recording, MIDI thru, model-side Settings.
+- 1.0, API freeze: Swift wrapper in this package, C API review, format-0 SMF oracle, docs.
+
+Platform adapters (a CoreMIDI sink and clock, for example) belong to the application using the library.

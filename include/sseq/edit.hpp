@@ -4,6 +4,7 @@
 #pragma once
 
 #include "event.hpp"
+#include "maps.hpp"
 #include "sequence.hpp"
 #include "types.hpp"
 
@@ -15,16 +16,49 @@
 
 namespace sseq::edit {
 
-/// Which event kinds an edit touches (Cakewalk's "Use event filter"). Without a filter, each
-/// command has its own default (Quantize: notes only).
+/// An inclusive value range, inverted by `exclude` (the dialog's "Not").
+struct ValueRange {
+    int min = 0;
+    int max = 127;
+    bool exclude = false;
+
+    [[nodiscard]] bool contains(const int value) const noexcept {
+        const bool inside = value >= min && value <= max;
+        return exclude ? !inside : inside;
+    }
+};
+
+/// Cakewalk's Event Filter dialog ("Use event filter"): which event kinds an edit touches, and for
+/// the six MIDI channel kinds, ranges on their fields (all inclusive, all required). The "any
+/// kind of event" ranges (channel, beat within the measure, tick within the beat) apply to those
+/// six kinds as well. Sysex, Text, MCI and Wave events are not covered by the dialog: a filter
+/// built from it always passes them, so `kinds` keeps them true; "Nothing" clears the six only.
+/// Without the dialog, each command has its own default (Quantize: notes only).
 struct EventFilter {
-    std::array<bool, 10> kinds{}; // indexed by EventKind
+    std::array<bool, 10> kinds{}; // "Include", indexed by EventKind
+    ValueRange noteKey{0, 127};
+    ValueRange noteVelocity{0, 127};
+    ValueRange noteDuration{0, 65535};
+    ValueRange keyAftertouchKey{0, 127};
+    ValueRange keyAftertouchValue{0, 127};
+    ValueRange controllerNumber{0, 127};
+    ValueRange controllerValue{0, 127};
+    ValueRange patchNumber{0, 127};
+    ValueRange channelAftertouchAmount{0, 127};
+    ValueRange pitchWheelValue{-8192, 8191};
+    ValueRange channel{0, 15}; // 0-based here (the dialog shows 1..16)
+    ValueRange beat{1, 99};    // 1-based beat within the measure
+    ValueRange tick{0, 1919};  // tick within the beat
 
     [[nodiscard]] static EventFilter none() noexcept { return {}; }
     [[nodiscard]] static EventFilter all() noexcept;
     [[nodiscard]] static EventFilter only(EventKind kind) noexcept;
+    /// The dialog's "Nothing": no MIDI channel kind, the other kinds still pass.
+    [[nodiscard]] static EventFilter nothing() noexcept;
     [[nodiscard]] bool includes(EventKind kind) const noexcept { return kinds[static_cast<std::size_t>(kind)]; }
-    [[nodiscard]] bool includes(const Event& event) const noexcept { return includes(event.kind); }
+    /// The kind, its field ranges and the channel; beat and tick need the meter map.
+    [[nodiscard]] bool includes(const Event& event) const noexcept;
+    [[nodiscard]] bool includes(const Event& event, const MeterMap& meter) const noexcept;
     EventFilter& set(EventKind kind, bool on = true) noexcept {
         kinds[static_cast<std::size_t>(kind)] = on;
         return *this;
