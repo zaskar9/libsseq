@@ -30,7 +30,7 @@ typedef struct sseq_sequence sseq_sequence;
 typedef struct sseq_transport sseq_transport;
 typedef struct sseq_recorder sseq_recorder;
 
-const char* sseq_version(void); /* "0.8.0" */
+const char* sseq_version(void); /* "0.8.1" */
 /* The message of the last failure on this thread ("" when there was none). */
 const char* sseq_last_error(void);
 
@@ -455,6 +455,19 @@ typedef struct {
     uint8_t data[3];
 } sseq_midi_message;
 
+/* Which generation of the original engine to imitate (see engine.hpp, EngineVersion). */
+typedef enum {
+    SSEQ_ENGINE_1_01 = 0, /* Cakewalk Professional demo: Time+ before 0 drops the event; no MIDI sync */
+    SSEQ_ENGINE_2_10,     /* Cakewalk Apprentice 1.04 (the default) */
+    SSEQ_ENGINE_3_00      /* Cakewalk Professional 2.00: chases pan and ended streams; click d - 1 clocks; accent */
+} sseq_engine_version;
+
+/* Which program's reading of the file to imitate (see engine.hpp, Program). */
+typedef enum {
+    SSEQ_PROGRAM_APPRENTICE = 0, /* ignores auto-shuttle and auto-send banks */
+    SSEQ_PROGRAM_PROFESSIONAL    /* applies auto-stop, auto-rewind, auto-restart; sends auto-send banks on open */
+} sseq_program;
+
 typedef struct {
     double look_ahead;          /* seconds scheduled ahead of the clock by each pump (0.1) */
     double tempo_ratio;         /* playback speed (1.0) */
@@ -462,7 +475,7 @@ typedef struct {
     int chase;                  /* patch/controller search-back at start (1) */
     int zero_controllers_on_stop;
     int send_sysex_banks;
-    int has_loop; /* auto-shuttle between loop_from and loop_thru */
+    int has_loop; /* auto-shuttle with restart: at loop_thru (< 0: the end) continue at loop_from */
     sseq_tick loop_from;
     sseq_tick loop_thru;
     int metronome;
@@ -472,11 +485,19 @@ typedef struct {
     int midi_clock;           /* MIDI sync out: Start/Continue, Clock (24 per quarter note), Stop (0) */
     int start_never_continue; /* always Start, never Continue (0) */
     int clock_while_stopped;  /* with midi_clock: Clock also while stopped, from pump (1) */
+    int engine;               /* sseq_engine_version (SSEQ_ENGINE_2_10) */
+    int has_stop_at;          /* auto-stop: stop when the position reaches stop_at (its events do not play) */
+    sseq_tick stop_at;
+    int has_rewind_to; /* auto-rewind: when playback stops by itself, Now goes to rewind_to */
+    sseq_tick rewind_to;
 } sseq_playback_options;
 void sseq_playback_options_default(sseq_playback_options* out);
 /* Options from the sequence's own settings; `recording` != 0 picks the recording metronome, count-in
  * and running past the end. */
 void sseq_playback_options_from_sequence(const sseq_sequence* sequence, int recording, sseq_playback_options* out);
+/* The same, as `program` (sseq_program) reads the file: Professional also applies the auto-shuttle. */
+void sseq_playback_options_for_program(const sseq_sequence* sequence, int recording, int program,
+                                       sseq_playback_options* out);
 
 /* The application's clock and MIDI output. `now` returns monotonic seconds; `send` and `send_sysex`
  * receive messages with timestamps up to look_ahead in the future and must deliver them at those
@@ -529,6 +550,10 @@ int sseq_transport_pump(sseq_transport* transport);
 /* What loading the sequence sends: patch, volume and pan of every stream with events, in stream-number
  * order, muted streams included. Release the result with sseq_render_free. */
 int sseq_open_messages(const sseq_sequence* sequence, sseq_midi_message** out, size_t* count);
+/* The sysex banks marked auto-send, as bank indexes (for sseq_sequence_sysex_bank_data) in bank-number
+ * order; Cakewalk Professional sends them when it opens the file, Apprentice does not. Writes up to
+ * `capacity` indexes and returns how many there are. */
+size_t sseq_auto_send_banks(const sseq_sequence* sequence, size_t* indexes, size_t capacity);
 
 /* Offline rendering of [from, thru) (thru < 0: the end) with times in seconds from `from`.
  * Release the result with sseq_render_free. `options` may be NULL. */

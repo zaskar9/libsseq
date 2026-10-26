@@ -30,8 +30,24 @@ double SteadyClock::now() const {
 
 // ---------------------------------------------------------------- options
 
-PlaybackOptions PlaybackOptions::fromSequence(const Sequence& sequence, const bool recording) {
+PlaybackOptions PlaybackOptions::fromSequence(const Sequence& sequence, const bool recording, const Program program) {
     PlaybackOptions o;
+    if (program == Program::Professional) {
+        const Vars& v = sequence.vars;
+        if (v.autoRewind() && v.autoRestart()) {
+            o.loopFrom = v.rewindTime();
+            if (v.autoStop()) {
+                o.loopThru = v.stopTime();
+            }
+        } else {
+            if (v.autoStop()) {
+                o.stopAt = v.stopTime();
+            }
+            if (v.autoRewind()) {
+                o.rewindTo = v.rewindTime();
+            }
+        }
+    }
     o.chase = sequence.vars.patchSearchBack();
     o.zeroControllersOnStop = sequence.vars.zeroControllers();
     o.metronome = recording ? sequence.vars.metronomeRecording() : sequence.vars.metronomePlayback();
@@ -180,7 +196,9 @@ struct Playlist {
 };
 
 /// Builds the sorted list of outputs of all streams (mute and solo are applied at scheduling time).
-Playlist buildPlaylist(const Sequence& sequence) {
+/// With `dropEarly` (engine 1.01) an event that Time+ moves before tick 0 is left out; otherwise it
+/// plays at tick 0.
+Playlist buildPlaylist(const Sequence& sequence, const bool dropEarly) {
     Playlist p;
     const Tick sequenceEnd = nonLoopingEnd(sequence);
     const std::vector<const Stream*> ordered = streamsByNumber(sequence);
@@ -202,6 +220,10 @@ Playlist buildPlaylist(const Sequence& sequence) {
         for (int rep = 0; rep < reps; ++rep) {
             const Tick shift = offset + rep * period;
             for (const Event& e : t.events) {
+                if (dropEarly && e.time + shift < 0) {
+                    ++index;
+                    continue;
+                }
                 // Time- that moves an event before the start plays it at the start.
                 const Tick tick = std::max<Tick>(0, e.time + shift);
                 if (clip && tick >= *clip) {
@@ -271,10 +293,11 @@ Playlist buildPlaylist(const Sequence& sequence) {
 }
 
 /// The last patch, pitch wheel, modulation, sustain and volume of each audible stream before
-/// `start`, for the streams that still have events at or after `start` ("search-back").
+/// `start`, for the streams that still have events at or after `start` ("search-back"). Engine 3.00
+/// (`v3`) adds pan, and chases the streams that have ended too.
 template <typename Audible>
 std::vector<Item> chaseItems(const Sequence& sequence, const Playlist& playlist, const Tick start,
-                             const Audible& audible) {
+                             const Audible& audible, const bool v3) {
     std::vector<Item> out;
     for (const Stream* t : streamsByNumber(sequence)) {
         if (!audible(t->number)) {
@@ -282,11 +305,11 @@ std::vector<Item> chaseItems(const Sequence& sequence, const Playlist& playlist,
         }
         const bool continues = std::ranges::any_of(
             playlist.items, [&](const Item& it) { return it.stream == t->number && it.tick >= start; });
-        if (!continues) {
+        if (!continues && !v3) {
             continue;
         }
-        // patch, wheel, CC 1, CC 64, CC 7: the latest of each before `start`, per output channel
-        std::map<std::tuple<int, std::uint8_t>, std::array<std::optional<Item>, 5>> latest;
+        // patch, wheel, CC 1, CC 64, CC 7 (and CC 10): the latest of each before `start`, per output channel
+        std::map<std::tuple<int, std::uint8_t>, std::array<std::optional<Item>, 6>> latest;
         for (const Item& it : playlist.items) {
             if (it.tick >= start) {
                 break;
@@ -306,6 +329,8 @@ std::vector<Item> chaseItems(const Sequence& sequence, const Playlist& playlist,
                 slot = 3;
             } else if (kind == 0xb0 && it.data[1] == 7) {
                 slot = 4;
+            } else if (kind == 0xb0 && it.data[1] == 10 && v3) {
+                slot = 5;
             }
             if (slot >= 0) {
                 latest[{it.port, static_cast<std::uint8_t>(it.data[0] & 0x0fU)}][static_cast<std::size_t>(slot)] = it;
@@ -421,6 +446,7 @@ struct Transport::Impl {
     StringEventHandler stringHandler;
 
     Playlist playlist;
+    bool playlistDropsEarly = false; // the playlist was built for engine 1.01
     std::set<int> muted;
     std::set<int> solo;
 
@@ -441,9 +467,14 @@ struct Transport::Impl {
                                                                // that may still be ahead of the clock
     std::int64_t nextClock = 0;                                // index of the next MIDI clock (24 per quarter note)
     double idleClock = -1;                                     // next MIDI clock while stopped (< 0: not started)
+    std::optional<Tick> loopEnd; // auto-shuttle with restart in effect: wrap here to loopStart
+    Tick loopStart = 0;
+    std::optional<Tick> stopTick;   // auto-stop in effect: stop here
+    bool stoppedAtStopTick = false; // reachedEnd because of stopTick
 
     Impl(const Sequence& s, Clock& c, MidiSink& k, const PlaybackOptions& o)
-        : sequence(&s), clock(&c), sink(&k), options(o), playlist(buildPlaylist(s)) {
+        : sequence(&s), clock(&c), sink(&k), options(o), playlist(buildPlaylist(s, o.engine == EngineVersion::v1_01)),
+          playlistDropsEarly(o.engine == EngineVersion::v1_01) {
         for (const Stream& t : s.streams) {
             if (t.muted) {
                 muted.insert(t.number);
@@ -469,6 +500,9 @@ struct Transport::Impl {
         return !muted.contains(stream);
     }
     [[nodiscard]] Tick lastTick() const { return playlist.end; }
+    /// Where playback stops by itself: the end, or the auto-stop time when it comes first.
+    [[nodiscard]] Tick stopLimit() const { return stopTick ? std::min(*stopTick, lastTick()) : lastTick(); }
+    [[nodiscard]] bool syncOut() const { return options.midiClock && options.engine != EngineVersion::v1_01; }
     [[nodiscard]] bool clickEnabled() const {
         return options.metronome && sequence->metronome.velocity > 0 && sequence->metronome.duration > 0;
     }
@@ -480,8 +514,10 @@ struct Transport::Impl {
     }
 
     /// A metronome tick: note on at `time`, note off `durationSeconds` later. A click still sounding
-    /// (its length reaches past this beat) ends first.
-    void click(const double time, const double durationSeconds) {
+    /// (its length reaches past this beat) ends first. Engine 3.00 accents the first beat of a
+    /// measure with velocity 127 when the accent is on (observed with velocity 110); the older
+    /// engines send the same velocity on every beat.
+    void click(const double time, const double durationSeconds, const bool downbeat) {
         const Metronome& m = sequence->metronome;
         const auto status = static_cast<std::uint8_t>(0x90 | (m.channel & 0x0f));
         const auto key = clamp7(m.key);
@@ -491,7 +527,8 @@ struct Transport::Impl {
             sink->send(off);
         }
         clickOffs.clear();
-        sink->send(message3(time, m.port, status, key, clamp7(m.velocity)));
+        const bool accent = downbeat && options.metronomeAccent && options.engine == EngineVersion::v3_00;
+        sink->send(message3(time, m.port, status, key, accent ? std::uint8_t{127} : clamp7(m.velocity)));
         clickOffs.emplace(time + durationSeconds, message3(time + durationSeconds, m.port, status, key, 0));
     }
 
@@ -505,19 +542,20 @@ struct Transport::Impl {
 
     /// The click's length in ticks. The metronome duration counts MIDI clocks (1/24 quarter note,
     /// the dialog allows 1 to 24), and the original ends the click two clocks before that count; a
-    /// duration of 1 wraps round to 23 clocks.
+    /// duration of 1 wraps round to 23 clocks. Engine 3.00 ends it one clock before the count.
     [[nodiscard]] Tick clickTicks() const {
         const int d = sequence->metronome.duration;
-        const int clocks = d >= 2 ? d - 2 : 23;
+        const int back = options.engine == EngineVersion::v3_00 ? 1 : 2;
+        const int clocks = d >= back ? d - back : 24 + d - back;
         return static_cast<Tick>(clocks) * sequence->ppq / 24;
     }
 
     /// A click on the beat at `tick`. Its note-off comes after clickTicks(), but not later than
     /// one MIDI clock before the next measure; a click still sounding at the next beat ends there.
-    void clickAt(const Tick tick) {
+    void clickAt(const Tick tick, const bool downbeat) {
         const double time = tickToClock(tick);
         const Tick lastClock = sequence->meterMap.nextMeasure(tick) - sequence->ppq / 24;
-        click(time, tickToClock(std::min(tick + clickTicks(), lastClock)) - time);
+        click(time, tickToClock(std::min(tick + clickTicks(), lastClock)) - time, downbeat);
     }
 
     void noteOn(const Item& it, const double time) {
@@ -615,7 +653,7 @@ struct Transport::Impl {
     /// offs and All Notes Off; then, when asked, the controller reset on every channel.
     void stopOutput(const double time, const bool zeroControllers) {
         std::set<int> ports = portsInUse(*sequence);
-        if (options.midiClock) {
+        if (syncOut()) {
             for (const int port : ports) {
                 sink->send(message1(time, port, 0xfc));
             }
@@ -659,6 +697,24 @@ struct Transport::Impl {
     }
 
     void start(const Tick tick, const double at, const bool withCountIn, const bool transportStart) {
+        if (playlistDropsEarly != (options.engine == EngineVersion::v1_01)) {
+            playlistDropsEarly = options.engine == EngineVersion::v1_01;
+            playlist = buildPlaylist(*sequence, playlistDropsEarly);
+        }
+        // The auto-shuttle applies when playback starts before its stop time.
+        loopEnd.reset();
+        stopTick.reset();
+        if (options.loopFrom) {
+            const Tick end = options.loopThru.value_or(lastTick());
+            if (end > *options.loopFrom && tick < end) {
+                loopEnd = end;
+                loopStart = *options.loopFrom;
+            }
+        }
+        if (!loopEnd && options.stopAt && tick < *options.stopAt) {
+            stopTick = options.stopAt;
+        }
+        stoppedAtStopTick = false;
         anchorTick = tick;
         anchorClock = at;
         countInClicks.clear();
@@ -682,7 +738,7 @@ struct Transport::Impl {
         nextClock = (static_cast<std::int64_t>(tick) * 24 + sequence->ppq - 1) / sequence->ppq;
         scheduledThrough = at;
         reachedEnd = false;
-        if (transportStart && options.midiClock) {
+        if (transportStart && syncOut()) {
             const std::uint8_t status = tick == 0 || options.startNeverContinue ? 0xfa : 0xfb;
             for (const int port : portsInUse(*sequence)) {
                 sink->send(message1(at, port, status));
@@ -700,7 +756,9 @@ struct Transport::Impl {
             }
         }
         if (options.chase) {
-            for (const Item& it : chaseItems(*sequence, playlist, tick, [this](int s) { return audible(s); })) {
+            for (const Item& it : chaseItems(
+                     *sequence, playlist, tick, [this](int s) { return audible(s); },
+                     options.engine == EngineVersion::v3_00)) {
                 emit(it, at);
             }
         }
@@ -718,7 +776,7 @@ struct Transport::Impl {
                 clickTick = tick;
                 break;
             }
-            clickAt(tick);
+            clickAt(tick, downbeat);
             clickTick = beatAtOrAfter(sequence->meterMap, tick + 1).first;
         }
     }
@@ -726,32 +784,40 @@ struct Transport::Impl {
     /// Schedules items up to `horizon` (clock time). Handles the loop range and the end.
     void schedule(const double horizon) {
         while (!countInClicks.empty() && countInClicks.front().first <= horizon) {
-            click(countInClicks.front().first, countInDuration);
+            click(countInClicks.front().first, countInDuration, countInClicks.front().second);
             countInClicks.erase(countInClicks.begin());
         }
-        const bool looping = options.loopFrom && options.loopThru && *options.loopThru > *options.loopFrom;
-        const Tick limit = looping ? *options.loopThru : lastTick();
+        const Tick limit = loopEnd ? *loopEnd : stopLimit();
         while (!reachedEnd) {
             const Tick itemTick = next < playlist.items.size() ? playlist.items[next].tick : kNever;
             const Tick offTick = offs.empty() ? kNever : offs.top().tick;
             const Tick content = std::min(itemTick, offTick);
             // Loop: when the next thing lies at or past the loop end, wrap there once that time is due.
-            if (looping && content >= *options.loopThru) {
-                const double wrapAt = tickToClock(*options.loopThru);
+            if (loopEnd && content >= *loopEnd) {
+                const double wrapAt = tickToClock(*loopEnd);
                 if (wrapAt > horizon) {
-                    scheduleClicks(horizon, *options.loopThru);
+                    scheduleClicks(horizon, *loopEnd);
                     break;
                 }
-                scheduleClicks(horizon, *options.loopThru - 1);
-                scheduleClocks(wrapAt, *options.loopThru - 1);
+                scheduleClicks(horizon, *loopEnd - 1);
+                scheduleClocks(wrapAt, *loopEnd - 1);
                 silence(wrapAt);
-                anchorTick = *options.loopFrom;
+                anchorTick = loopStart;
                 anchorClock = wrapAt;
                 next = static_cast<std::size_t>(std::ranges::lower_bound(playlist.items, anchorTick, {}, &Item::tick) -
                                                 playlist.items.begin());
                 clickTick = beatAtOrAfter(sequence->meterMap, anchorTick).first;
                 nextClock = (static_cast<std::int64_t>(anchorTick) * 24 + sequence->ppq - 1) / sequence->ppq;
                 continue;
+            }
+            // Auto-stop: the events at the stop time do not play.
+            if (stopTick && content >= *stopTick) {
+                scheduleClicks(horizon, *stopTick - 1);
+                scheduleClocks(horizon, *stopTick - 1);
+                endClock = tickToClock(*stopTick);
+                reachedEnd = true;
+                stoppedAtStopTick = true;
+                break;
             }
             if (content == kNever) {
                 scheduleClicks(horizon, limit);
@@ -785,7 +851,7 @@ struct Transport::Impl {
 
     /// MIDI clocks up to `horizon`, but not beyond tick `limit`.
     void scheduleClocks(const double horizon, const Tick limit) {
-        if (!options.midiClock) {
+        if (!syncOut()) {
             return;
         }
         while (clockTicks(nextClock) <= limit && tickToClock(clockTicks(nextClock)) <= horizon) {
@@ -860,8 +926,8 @@ void Transport::stop() {
     }
     const double t = impl_->clock->now();
     impl_->position = impl_->clockToTick(t);
-    if (impl_->options.stopAtEnd) {
-        impl_->position = std::min(impl_->position, impl_->lastTick());
+    if (impl_->options.stopAtEnd || impl_->stopTick) {
+        impl_->position = std::min(impl_->position, impl_->stopLimit());
     }
     impl_->playing = false;
     impl_->countInClicks.clear();
@@ -926,6 +992,9 @@ Tick Transport::now() const {
         return impl_->position;
     }
     const Tick tick = impl_->clockToTick(impl_->clock->now());
+    if (impl_->stopTick) {
+        return std::min(tick, impl_->stopLimit());
+    }
     return impl_->options.stopAtEnd ? std::min(tick, impl_->lastTick()) : tick;
 }
 
@@ -956,7 +1025,7 @@ bool Transport::isAudible(const int streamNumber) const {
 bool Transport::pump() {
     const double now = impl_->clock->now();
     if (!impl_->playing) {
-        if (impl_->options.midiClock && impl_->options.clockWhileStopped) {
+        if (impl_->syncOut() && impl_->options.clockWhileStopped) {
             impl_->idleClocks(now + impl_->options.lookAhead);
             impl_->sink->flush();
         }
@@ -964,10 +1033,10 @@ bool Transport::pump() {
     }
     impl_->pruneHandedOver(now);
     impl_->schedule(now + impl_->options.lookAhead);
-    if (impl_->options.stopAtEnd && impl_->reachedEnd && now >= impl_->endClock) {
-        // The end: the same output as a stop, at the end time.
+    if ((impl_->options.stopAtEnd || impl_->stoppedAtStopTick) && impl_->reachedEnd && now >= impl_->endClock) {
+        // The end (or the auto-stop time): the same output as a stop, at that time; then auto-rewind.
         impl_->playing = false;
-        impl_->position = impl_->lastTick();
+        impl_->position = impl_->options.rewindTo.value_or(impl_->stopLimit());
         impl_->stopOutput(impl_->endClock, impl_->options.zeroControllersOnStop);
         impl_->idleClock = -1;
         impl_->sink->flush();
@@ -978,6 +1047,17 @@ bool Transport::pump() {
 }
 
 // ---------------------------------------------------------------- open, render
+
+std::vector<std::size_t> autoSendBanks(const Sequence& sequence) {
+    std::vector<std::size_t> out;
+    for (std::size_t i = 0; i < sequence.sysxBanks.size(); ++i) {
+        if (sequence.sysxBanks[i].autoSend) {
+            out.push_back(i);
+        }
+    }
+    std::ranges::stable_sort(out, {}, [&](const std::size_t i) { return sequence.sysxBanks[i].bank; });
+    return out;
+}
 
 std::vector<MidiMessage> openMessages(const Sequence& sequence) {
     std::vector<MidiMessage> out;

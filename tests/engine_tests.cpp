@@ -390,6 +390,125 @@ void testLoop() {
     tr.stop();
 }
 
+/// Auto-stop, auto-rewind and auto-restart as Cakewalk Professional reads them from the file, and
+/// the engine profiles that change the playlist.
+void testAutoShuttle() {
+    Sequence s = simpleSequence(); // notes at 0, 120, 240; 240 ticks per second; ends at 360
+    // Apprentice ignores the file's settings.
+    s.vars.setFlag(21, true);
+    s.vars.setU32(22, 240);
+    s.vars.setFlag(26, true);
+    s.vars.setU32(27, 120);
+    PlaybackOptions o = PlaybackOptions::fromSequence(s);
+    CHECK(!(o.loopFrom || o.loopThru || o.stopAt || o.rewindTo));
+    // Professional: stop and rewind without restart.
+    o = PlaybackOptions::fromSequence(s, false, Program::Professional);
+    CHECK(!(o.loopFrom || o.loopThru));
+    CHECK_EQ(o.stopAt.value_or(-1), 240);
+    CHECK_EQ(o.rewindTo.value_or(-1), 120);
+    o.sendStreamParameters = false;
+    std::vector<MidiMessage> out = render(s, o);
+    CHECK(std::ranges::none_of(out, [](const MidiMessage& m) { return m.data[1] == 64 && m.isNoteOn(); }));
+    CHECK_EQ(hex(out[3]), "b0 7b 00"); // two notes, then the stop at tick 240
+    CHECK(near(out[3].time, 1.0));
+    FakeClock clock;
+    RecordingSink sink;
+    o.lookAhead = 0;
+    {
+        Transport tr(s, clock, sink, o);
+        tr.play();
+        clock.time = 0.5;
+        CHECK(tr.pump());
+        CHECK_EQ(tr.now(), 120);
+        clock.time = 1.2;
+        CHECK(!tr.pump());       // stopped by itself at the stop time
+        CHECK_EQ(tr.now(), 120); // and rewound
+        // From past the stop time the auto-stop does not apply: play to the end.
+        tr.seek(300);
+        clock.time = 2.0;
+        tr.play();
+        clock.time = 3.0;
+        CHECK(!tr.pump());
+        CHECK_EQ(tr.now(), 120);
+    }
+    // With restart: the range loops; without a stop time, the end of the sequence closes it.
+    s.vars.setFlag(57, true);
+    o = PlaybackOptions::fromSequence(s, false, Program::Professional);
+    CHECK_EQ(o.loopFrom.value_or(-1), 120);
+    CHECK_EQ(o.loopThru.value_or(-1), 240);
+    CHECK(!(o.stopAt || o.rewindTo));
+    s.vars.setFlag(21, false);
+    o = PlaybackOptions::fromSequence(s, false, Program::Professional);
+    CHECK_EQ(o.loopFrom.value_or(-1), 120);
+    CHECK(!o.loopThru);
+    o.sendStreamParameters = false;
+    o.lookAhead = 0;
+    sink.messages.clear();
+    {
+        clock.time = 0;
+        Transport tr(s, clock, sink, o);
+        tr.play();
+        clock.time = 2.6; // 0 .. 1.5 s, then 120 .. 360 again (1 s each), wrapping at the end
+        CHECK(tr.pump());
+        std::vector<double> d; // onsets of the note at 120
+        for (const MidiMessage& m : sink.messages) {
+            if (m.isNoteOn() && m.data[1] == 62) {
+                d.push_back(m.time);
+            }
+        }
+        CHECK_EQ(d.size(), 3U);
+        CHECK(near(d.at(0), 0.5));
+        CHECK(near(d.at(1), 1.5));
+        CHECK(near(d.at(2), 2.5));
+        CHECK(std::ranges::none_of(sink.messages, [](const MidiMessage& m) { return hex(m) == "b2 7b 00"; }));
+        tr.stop();
+    }
+    // Restart without rewind is ignored.
+    s.vars.setFlag(26, false);
+    o = PlaybackOptions::fromSequence(s, false, Program::Professional);
+    CHECK(!(o.loopFrom || o.loopThru || o.stopAt || o.rewindTo));
+
+    // Engine 1.01 drops an event that Time+ moves before tick 0; the others play it at tick 0.
+    Sequence early = simpleSequence();
+    early.stream(0).timePlus = -60;
+    PlaybackOptions e;
+    e.sendStreamParameters = false;
+    CHECK_EQ(hex(render(early, e)[0]), "92 3c 64");
+    e.engine = EngineVersion::v1_01;
+    CHECK_EQ(hex(render(early, e)[0]), "92 3e 5a");
+    {
+        clock.time = 0;
+        Transport tr(early, clock, sink, PlaybackOptions{});
+        PlaybackOptions changed = tr.options();
+        changed.engine = EngineVersion::v1_01;
+        changed.lookAhead = 1;
+        changed.sendStreamParameters = false;
+        tr.setOptions(changed); // rebuilds the playlist at the next play()
+        sink.messages.clear();
+        tr.play();
+        CHECK_EQ(hex(sink.messages.at(0)), "92 3e 5a");
+        tr.stop();
+    }
+    // Engine 1.01 sends no MIDI sync.
+    e.midiClock = true;
+    out = render(simpleSequence(), e);
+    CHECK(std::ranges::none_of(out, [](const MidiMessage& m) { return m.data[0] >= 0xf8; }));
+
+    // Auto-send banks, in bank-number order.
+    Sequence banks;
+    SysxBank b;
+    b.bank = 3;
+    b.autoSend = true;
+    banks.sysxBanks.push_back(b);
+    b.bank = 1;
+    b.autoSend = false;
+    banks.sysxBanks.push_back(b);
+    b.bank = 0;
+    b.autoSend = true;
+    banks.sysxBanks.push_back(b);
+    CHECK(autoSendBanks(banks) == std::vector<std::size_t>({2, 0}));
+}
+
 void testSysexAndStringEvents() {
     Sequence s = simpleSequence();
     SysxBank bank;
@@ -616,8 +735,11 @@ std::vector<Captured> onePlayback(std::vector<Captured> c) {
 }
 
 /// Every message the transport sends (short and sysex), as playing from `from` to `thru` (the end
-/// when absent) with the sequence's own settings.
-std::vector<Captured> playback(const Sequence& s, const Tick from, const std::optional<Tick> thru) {
+/// when absent) with the sequence's own settings, as `program` reads them, on `engine`. With
+/// `stopSeconds`, playback stops after that many seconds instead (for the auto-shuttle).
+std::vector<Captured> playback(const Sequence& s, const Tick from, const std::optional<Tick> thru,
+                               const EngineVersion engine = EngineVersion::v2_10,
+                               const Program program = Program::Apprentice, const double stopSeconds = -1) {
     class AllSink final : public MidiSink {
     public:
         std::vector<Captured> out;
@@ -634,13 +756,14 @@ std::vector<Captured> playback(const Sequence& s, const Tick from, const std::op
     };
     FakeClock clock;
     AllSink sink;
-    PlaybackOptions o = PlaybackOptions::fromSequence(s);
+    PlaybackOptions o = PlaybackOptions::fromSequence(s, false, program);
     o.lookAhead = 0;
+    o.engine = engine;
     Transport tr(s, clock, sink, o);
     tr.seek(from);
     tr.play();
     const Tick end = thru.value_or(tr.endTick());
-    clock.time = s.tempoMap.tickToSeconds(end) - s.tempoMap.tickToSeconds(from);
+    clock.time = stopSeconds >= 0 ? stopSeconds : s.tempoMap.tickToSeconds(end) - s.tempoMap.tickToSeconds(from);
     tr.pump();
     if (tr.playing()) {
         tr.stop();
@@ -648,17 +771,88 @@ std::vector<Captured> playback(const Sequence& s, const Tick from, const std::op
     return sink.out;
 }
 
-/// The original engine's output for the engine test sequences (tests/data/engine/README.md): the
-/// same messages in the same order, and (where the capture's timing is meaningful) within 25 ms.
+struct Take {
+    const char* capture;
+    const char* sequence; // in engine/src, or src/ for the corpus songs
+    Tick from;
+    Tick thru; // -1: to the end
+    bool times;
+    double stopSeconds = -1; // stop after this time instead (auto-shuttle)
+};
+
+/// Compares each take of `dir` (under tests/data) with libsseq's output: the same messages in the
+/// same order, and (where the capture's timing is meaningful) within 25 ms.
+void checkTakes(const std::string& data, const std::string& dir, const std::vector<Take>& takes,
+                const EngineVersion engine, const Program program) {
+    for (const Take& take : takes) {
+        const Sequence s = wrk::readFile(data + "/" + take.sequence + ".WRK");
+        std::string path = data;
+        path.append("/").append(dir).append("/").append(take.capture).append(".txt");
+        const std::vector<Captured> want = onePlayback(readCapture(path));
+        const std::vector<Captured> got =
+            playback(s, take.from, take.thru < 0 ? std::nullopt : std::optional<Tick>(take.thru), engine, program,
+                     take.stopSeconds);
+        CHECK_EQ(got.size(), want.size());
+        double worst = 0;
+        for (std::size_t i = 0; i < std::min(got.size(), want.size()); ++i) {
+            if (got[i].bytes != want[i].bytes) {
+                std::fprintf(stderr, "%s/%s: message %zu is %s, the capture has %s\n", dir.c_str(), take.capture, i,
+                             got[i].bytes.c_str(), want[i].bytes.c_str());
+                CHECK(false);
+                break;
+            }
+            // Engine 3.00 sends sysex 20 to 40 ms after its tick; libsseq does not model the delay.
+            if (engine == EngineVersion::v3_00 && got[i].bytes.starts_with("f0")) {
+                continue;
+            }
+            worst = std::max(worst, std::fabs(got[i].ms - want[i].ms));
+        }
+        if (take.times && worst >= 25) {
+            std::fprintf(stderr, "%s/%s: times differ by up to %.1f ms\n", dir.c_str(), take.capture, worst);
+            CHECK(worst < 25);
+        }
+    }
+}
+
+/// What opening each file sends: the auto-send sysex banks (Professional only) and the streams'
+/// patch, volume and pan (clocks of a previous file's sync left out).
+void checkOpens(const std::string& data, const std::string& dir,
+                const std::vector<std::pair<const char*, const char*>>& opens, const Program program) {
+    for (const auto& [capture, sequence] : opens) {
+        std::vector<std::string> want;
+        std::string path = data;
+        path.append("/").append(dir).append("/").append(capture).append(".txt");
+        for (const Captured& c : readCapture(path)) {
+            if (c.bytes != "f8") {
+                want.push_back(c.bytes);
+            }
+        }
+        const Sequence s = wrk::readFile(data + "/" + sequence + ".WRK");
+        std::vector<std::string> got;
+        if (program == Program::Professional) {
+            for (const std::size_t bank : autoSendBanks(s)) {
+                std::string h;
+                for (const std::uint8_t b : s.sysxBanks[bank].data) {
+                    std::array<char, 4> buf{};
+                    std::snprintf(buf.data(), buf.size(), "%02x", b);
+                    h += (h.empty() ? "" : " ") + std::string(buf.data());
+                }
+                got.push_back(h);
+            }
+        }
+        for (const MidiMessage& m : openMessages(s)) {
+            got.push_back(hex(m));
+        }
+        if (got != want) {
+            std::fprintf(stderr, "%s/%s: the open messages differ\n", dir.c_str(), capture);
+        }
+        CHECK(got == want);
+    }
+}
+
+/// The original engine's output for the engine test sequences (tests/data/engine/README.md).
 void testOracles(const std::string& data) {
-    struct Take {
-        const char* capture;
-        const char* sequence; // in engine/src, or src/ for the corpus songs
-        Tick from;
-        Tick thru; // -1: to the end
-        bool times;
-    };
-    const std::array<Take, 27> takes = {{
+    const std::vector<Take> takes = {{
         {"ENG_ORDR-play", "engine/src/ENG_ORDR", 0, -1, true},
         {"ENG_ORDR-stop", "engine/src/ENG_ORDR", 0, 585, true},
         {"ENG_ORDR-resume", "engine/src/ENG_ORDR", 585, 1176, false}, // restarted 17 ticks early
@@ -687,48 +881,15 @@ void testOracles(const std::string& data) {
         {"E3_SPPD-play", "engine/src/E3_SPPD", 480, -1, true},
         {"E3_SHTL-play", "engine/src/E3_SHTL", 0, -1, true}, // the auto-shuttle bytes are ignored
     }};
-    for (const Take& take : takes) {
-        const Sequence s = wrk::readFile(data + "/" + take.sequence + ".WRK");
-        const std::vector<Captured> want = onePlayback(readCapture(data + "/engine/" + take.capture + ".txt"));
-        const std::vector<Captured> got =
-            playback(s, take.from, take.thru < 0 ? std::nullopt : std::optional<Tick>(take.thru));
-        CHECK_EQ(got.size(), want.size());
-        double worst = 0;
-        for (std::size_t i = 0; i < std::min(got.size(), want.size()); ++i) {
-            if (got[i].bytes != want[i].bytes) {
-                std::fprintf(stderr, "%s: message %zu is %s, the capture has %s\n", take.capture, i,
-                             got[i].bytes.c_str(), want[i].bytes.c_str());
-                CHECK(false);
-                break;
-            }
-            worst = std::max(worst, std::fabs(got[i].ms - want[i].ms));
-        }
-        if (take.times && worst >= 25) {
-            std::fprintf(stderr, "%s: times differ by up to %.1f ms\n", take.capture, worst);
-            CHECK(worst < 25);
-        }
-    }
-    // Loading a file: the streams' patch, volume and pan (clocks of a previous file's sync left out).
-    const std::array<std::pair<const char*, const char*>, 5> opens = {{
-        {"ENG_ORDR-open", "engine/src/ENG_ORDR"},
-        {"ENG_MULT-open", "engine/src/ENG_MULT"},
-        {"ENG_SYSX-open", "engine/src/ENG_SYSX"}, // the auto-send bank is not sent
-        {"E2_CHAS-open", "engine/src/E2_CHAS"},
-        {"FURELISE-open", "src/FURELISE"},
-    }};
-    for (const auto& [capture, sequence] : opens) {
-        std::vector<std::string> want;
-        for (const Captured& c : readCapture(data + "/engine/" + capture + ".txt")) {
-            if (c.bytes != "f8") {
-                want.push_back(c.bytes);
-            }
-        }
-        std::vector<std::string> got;
-        for (const MidiMessage& m : openMessages(wrk::readFile(data + "/" + sequence + ".WRK"))) {
-            got.push_back(hex(m));
-        }
-        CHECK(got == want);
-    }
+    checkTakes(data, "engine", takes, EngineVersion::v2_10, Program::Apprentice);
+    // Loading a file.
+    checkOpens(data, "engine",
+               {{"ENG_ORDR-open", "engine/src/ENG_ORDR"},
+                {"ENG_MULT-open", "engine/src/ENG_MULT"},
+                {"ENG_SYSX-open", "engine/src/ENG_SYSX"}, // Apprentice does not send the auto-send bank
+                {"E2_CHAS-open", "engine/src/E2_CHAS"},
+                {"FURELISE-open", "src/FURELISE"}},
+               Program::Apprentice);
     // The original engine sends no Song Position Pointer, also with "Send MIDI SPP" on and after a
     // locate, and keeps sending Clock while stopped.
     for (const char* capture : {"E2_SPP-locate", "E2_SPP-play", "E3_SPPD-play"}) {
@@ -738,6 +899,87 @@ void testOracles(const std::string& data) {
     const std::vector<Captured> idle = readCapture(data + "/engine/ENG_SYNC-open.txt");
     CHECK(idle.size() > 100);
     CHECK(std::ranges::all_of(idle, [](const Captured& c) { return c.bytes == "f8"; }));
+}
+
+/// The same sequences in Cakewalk Professional 2.00 (engine 3.00, tests/data/engine/pro) and in the
+/// Cakewalk Professional demo (engine 1.01, tests/data/engine/demo).
+void testOtherEngines(const std::string& data) {
+    std::vector<Take> pro = {
+        {"ENG_ORDR-play", "engine/src/ENG_ORDR", 0, -1, true},
+        {"ENG_ORDR-stop", "engine/src/ENG_ORDR", 0, 583, true},
+        {"ENG_MULT-play", "engine/src/ENG_MULT", 0, -1, true},
+        {"ENG_PARM-play", "engine/src/ENG_PARM", 0, -1, true},
+        {"ENG_TMPO-play", "engine/src/ENG_TMPO", 0, -1, true},
+        {"ENG_CHAS-play", "engine/src/ENG_CHAS", 960, -1, true},
+        {"ENG_LOOP-play", "engine/src/ENG_LOOP", 0, -1, true},
+        {"ENG_SYSX-play", "engine/src/ENG_SYSX", 0, -1, true},
+        {"ENG_SYNC-play", "engine/src/ENG_SYNC", 0, 609, true},
+        {"ENG_METR-play", "engine/src/ENG_METR", 0, -1, true}, // accented first beats
+        {"E2_KORD-play", "engine/src/E2_KORD", 0, -1, true},
+        {"E2_OVLP-play", "engine/src/E2_OVLP", 0, -1, true},
+        {"E2_STOP-play", "engine/src/E2_STOP", 0, 295, true},
+        {"E2_CHAS-play", "engine/src/E2_CHAS", 960, -1, true}, // pan, and the stream that has ended
+        {"E2_METR-play", "engine/src/E2_METR", 0, -1, true},
+        {"E2_SPP-play", "engine/src/E2_SPP", 480, -1, true},
+        {"FURELISE-play", "src/FURELISE", 0, -1, true},
+        {"E3_MA-play", "engine/src/E3_MA", 0, -1, true}, // click durations: d - 1 clocks
+        {"E3_MB-play", "engine/src/E3_MB", 0, -1, true},
+        {"E3_MC-play", "engine/src/E3_MC", 0, -1, true},
+        {"E3_MD-play", "engine/src/E3_MD", 0, -1, true},
+        {"E3_ME-play", "engine/src/E3_ME", 0, -1, true},
+        {"E3_MF-play", "engine/src/E3_MF", 0, -1, true},
+        {"E3_DENS-stop", "engine/src/E3_DENS", 0, 559, true},
+        {"E3_SPPD-play", "engine/src/E3_SPPD", 480, -1, true},
+        {"E3_SHTL-play", "engine/src/E3_SHTL", 0, -1, true, 15.99}, // auto-shuttle 960 -> 480, stopped by hand
+    };
+    checkTakes(data, "engine/pro", pro, EngineVersion::v3_00, Program::Professional);
+    const std::vector<std::pair<const char*, const char*>> opens = {
+        {"ENG_ORDR-open", "engine/src/ENG_ORDR"}, {"ENG_MULT-open", "engine/src/ENG_MULT"},
+        {"ENG_CHAS-open", "engine/src/ENG_CHAS"}, {"ENG_SYSX-open", "engine/src/ENG_SYSX"}, // the auto-send bank
+        {"E2_CHAS-open", "engine/src/E2_CHAS"},   {"FURELISE-open", "src/FURELISE"}};
+    checkOpens(data, "engine/pro", opens, Program::Professional);
+
+    std::vector<Take> demo = {
+        {"ENG_ORDR-play", "engine/src/ENG_ORDR", 0, -1, true},
+        {"ENG_ORDR-stop", "engine/src/ENG_ORDR", 0, 587, true},
+        {"ENG_MULT-play", "engine/src/ENG_MULT", 0, -1, true},
+        {"ENG_PARM-play", "engine/src/ENG_PARM", 0, -1, false}, // Time- before 0 drops the event; the end comes late
+        {"ENG_TMPO-play", "engine/src/ENG_TMPO", 0, -1, true},
+        {"ENG_CHAS-play", "engine/src/ENG_CHAS", 960, -1, true},
+        {"ENG_LOOP-play", "engine/src/ENG_LOOP", 0, -1, true},
+        {"ENG_SYSX-play", "engine/src/ENG_SYSX", 0, -1, true},
+        {"ENG_SYNC-play", "engine/src/ENG_SYNC", 0, 608, true}, // no MIDI sync at all
+        {"ENG_METR-play", "engine/src/ENG_METR", 0, -1, true},
+        {"E2_KORD-play", "engine/src/E2_KORD", 0, -1, true},
+        {"E2_OVLP-play", "engine/src/E2_OVLP", 0, -1, false}, // the end comes late
+        {"E2_STOP-play", "engine/src/E2_STOP", 0, 372, true},
+        {"E2_CHAS-play", "engine/src/E2_CHAS", 960, -1, true},
+        {"E2_METR-play", "engine/src/E2_METR", 0, -1, true},
+        {"E2_SPP-play", "engine/src/E2_SPP", 480, -1, true},
+        {"FURELISE-play", "src/FURELISE", 0, -1, true},
+        {"E3_MA-play", "engine/src/E3_MA", 0, -1, true},
+        {"E3_MB-play", "engine/src/E3_MB", 0, -1, true},
+        {"E3_MC-play", "engine/src/E3_MC", 0, -1, true},
+        {"E3_MD-play", "engine/src/E3_MD", 0, -1, true},
+        {"E3_ME-play", "engine/src/E3_ME", 0, -1, true},
+        {"E3_MF-play", "engine/src/E3_MF", 0, -1, true},
+        {"E3_DENS-stop", "engine/src/E3_DENS", 0, 560, true},
+        {"E3_SHTL-play", "engine/src/E3_SHTL", 0, -1, true, 12.1}, // auto-shuttle, stopped by hand
+    };
+    checkTakes(data, "engine/demo", demo, EngineVersion::v1_01, Program::Professional);
+    checkOpens(data, "engine/demo", opens, Program::Professional);
+    // Engine 3.00 keeps sending Clock while stopped too; 1.01 sends no sync, also with the flag on.
+    const std::vector<Captured> idle = readCapture(data + "/engine/pro/idle.txt");
+    CHECK(idle.size() > 100);
+    CHECK(std::ranges::all_of(idle, [](const Captured& c) { return c.bytes == "f8"; }));
+    for (const char* capture : {"ENG_SYNC-play", "E2_SPP-play"}) {
+        const std::vector<Captured> c = readCapture(data + "/engine/demo/" + std::string(capture) + ".txt");
+        CHECK(std::ranges::none_of(c, [](const Captured& m) { return m.bytes[0] == 'f' && m.bytes[1] != '0'; }));
+    }
+    for (const char* capture : {"E2_SPP-play", "E3_SPPD-play", "ENG_SYNC-locate"}) {
+        const std::vector<Captured> sync = readCapture(data + "/engine/pro/" + std::string(capture) + ".txt");
+        CHECK(std::ranges::none_of(sync, [](const Captured& c) { return c.bytes.starts_with("f2"); }));
+    }
 }
 
 void testMidiClock() {
@@ -892,11 +1134,13 @@ int main(int argc, char** argv) {
     testSeekAndChase();
     testTempoChangeAndRatio();
     testLoop();
+    testAutoShuttle();
     testSysexAndStringEvents();
     testStreamLoopAndCorpus();
     testMetronome();
     testRecorder();
     testMidiClock();
     testOracles(argv[1]);
+    testOtherEngines(argv[1]);
     return test::report("engine tests");
 }

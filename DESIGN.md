@@ -263,6 +263,18 @@ the two things that differ between platforms and the engine does everything else
   Pointer, as in the original.
 - All of the above was checked against captures of Cakewalk Apprentice 1.04's MIDI output
   (`tests/data/engine/README.md`): same messages, same order, times within 25 ms.
+- Engine generations (v0.8.1, `engine`): `EngineVersion::v2_10` (Apprentice, the default),
+  `v3_00` (Cakewalk Professional 2.00: search-back also chases pan and the streams that have
+  ended; the click ends one clock before its duration; the accent clicks the first beat at
+  velocity 127) and `v1_01` (the 1992 Professional demo: an event moved before tick 0 is dropped;
+  no MIDI sync). Each is checked against its own captures.
+- Program behaviour (v0.8.1): `PlaybackOptions::fromSequence(sequence, recording,
+  Program::Professional)` applies the file's auto-stop, auto-rewind and auto-restart, which
+  Apprentice ignores. All three (or rewind and restart) give the loop range: play to `loopThru`
+  (the end when unset), whose events do not play, then continue at `loopFrom` with no stop
+  output. Otherwise `stopAt` stops there and `rewindTo` moves Now after stopping by itself. A
+  shuttle applies only when playback starts before its stop time. `autoSendBanks()` lists the
+  banks Professional sends on File > Open.
 - `render(sequence, options, from, thru)`: the same scheduling offline, returning the messages with
   times in seconds from `from`; this is what the tests check and what an export-to-audio or
   SMF-0 writer would consume.
@@ -271,7 +283,7 @@ the two things that differ between platforms and the engine does everything else
   playing, the end beat included, interleaved in time order with the sequence's messages; a
   velocity or duration of 0 disables it, as Cakewalk's help says. The MIDI click has the same
   velocity on every beat (`metronomeAccent` does not change it; Cakewalk's accent only shows on
-  its PC-speaker click). The duration counts MIDI clocks (1/24 quarter note): the click ends two
+  its PC-speaker click), except on engine 3.00. The duration counts MIDI clocks (1/24 quarter note): the click ends two
   clocks before that count (duration 1 wraps round to 23 clocks), never later than one clock
   before the next measure, and a click still sounding at the next beat ends right before it. `countInMeasures` plays whole measures of
   clicks before the start position, in the meter and tempo at that position; `now()` stays at

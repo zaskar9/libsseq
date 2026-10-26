@@ -14,6 +14,7 @@ own sample files or from any other third party.
 | `mid2wrk/NAME.WRK` | Cakewalk Apprentice 1.04, loading `app/NAME.MID` and saving as Cakewalk | oracle for the SMF import mapping |
 | `edit/NAME_X.WRK` | Cakewalk Apprentice 1.04, loading `src/NAME.WRK`, Mark > Select All, an Edit menu command, File > Save As | oracle for `sseq::edit` (`tests/edit_tests.cpp`) |
 | `engine/` | Cakewalk Apprentice 1.04 playing `engine/src/*.WRK`, its MIDI output captured | oracle for `sseq::engine` (`tests/engine_tests.cpp`); see `engine/README.md` |
+| `engine/pro/`, `engine/demo/` | the same with Cakewalk Professional 2.00 (engine 3.00) and the 1992 Professional demo (engine 1.01) | oracle for `EngineVersion` and `Program::Professional`; see `engine/README.md` |
 
 The Cakewalk files were produced by running the original program under Wine 9.0 (Linux
 x86_64, Win16 subsystem) with the UI driven by xdotool. File names keep the 8.3 form Windows 3.1 needs.

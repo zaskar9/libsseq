@@ -106,6 +106,10 @@ sseq::engine::MidiMessage fromC(const sseq_midi_message& m) {
     return out;
 }
 
+static_assert(static_cast<int>(sseq::engine::EngineVersion::v1_01) == SSEQ_ENGINE_1_01);
+static_assert(static_cast<int>(sseq::engine::EngineVersion::v2_10) == SSEQ_ENGINE_2_10);
+static_assert(static_cast<int>(sseq::engine::EngineVersion::v3_00) == SSEQ_ENGINE_3_00);
+
 sseq_playback_options toC(const sseq::engine::PlaybackOptions& o) {
     sseq_playback_options out{};
     out.look_ahead = o.lookAhead;
@@ -114,9 +118,9 @@ sseq_playback_options toC(const sseq::engine::PlaybackOptions& o) {
     out.chase = o.chase ? 1 : 0;
     out.zero_controllers_on_stop = o.zeroControllersOnStop ? 1 : 0;
     out.send_sysex_banks = o.sendSysexBanks ? 1 : 0;
-    out.has_loop = o.loopFrom && o.loopThru ? 1 : 0;
+    out.has_loop = o.loopFrom ? 1 : 0;
     out.loop_from = o.loopFrom.value_or(0);
-    out.loop_thru = o.loopThru.value_or(0);
+    out.loop_thru = o.loopThru.value_or(-1);
     out.metronome = o.metronome ? 1 : 0;
     out.metronome_accent = o.metronomeAccent ? 1 : 0;
     out.count_in_measures = o.countInMeasures;
@@ -124,6 +128,11 @@ sseq_playback_options toC(const sseq::engine::PlaybackOptions& o) {
     out.midi_clock = o.midiClock ? 1 : 0;
     out.start_never_continue = o.startNeverContinue ? 1 : 0;
     out.clock_while_stopped = o.clockWhileStopped ? 1 : 0;
+    out.engine = static_cast<int>(o.engine);
+    out.has_stop_at = o.stopAt ? 1 : 0;
+    out.stop_at = o.stopAt.value_or(0);
+    out.has_rewind_to = o.rewindTo ? 1 : 0;
+    out.rewind_to = o.rewindTo.value_or(0);
     return out;
 }
 
@@ -140,7 +149,18 @@ sseq::engine::PlaybackOptions fromC(const sseq_playback_options* o) {
     out.sendSysexBanks = o->send_sysex_banks != 0;
     if (o->has_loop != 0) {
         out.loopFrom = o->loop_from;
-        out.loopThru = o->loop_thru;
+        if (o->loop_thru >= 0) {
+            out.loopThru = o->loop_thru;
+        }
+    }
+    if (o->has_stop_at != 0) {
+        out.stopAt = o->stop_at;
+    }
+    if (o->has_rewind_to != 0) {
+        out.rewindTo = o->rewind_to;
+    }
+    if (o->engine >= SSEQ_ENGINE_1_01 && o->engine <= SSEQ_ENGINE_3_00) {
+        out.engine = static_cast<sseq::engine::EngineVersion>(o->engine);
     }
     out.metronome = o->metronome != 0;
     out.metronomeAccent = o->metronome_accent != 0;
@@ -314,7 +334,7 @@ void applyFilter(const sseq_event_filter* f, sseq::edit::EventFilter& filter) {
 extern "C" {
 
 const char* sseq_version(void) {
-    return "0.8.0";
+    return "0.8.1";
 }
 
 const char* sseq_last_error(void) {
@@ -1319,6 +1339,13 @@ void sseq_playback_options_from_sequence(const sseq_sequence* sequence, const in
     *out = toC(sseq::engine::PlaybackOptions::fromSequence(sequence->sequence, recording != 0));
 }
 
+void sseq_playback_options_for_program(const sseq_sequence* sequence, const int recording, const int program,
+                                       sseq_playback_options* out) {
+    const auto p =
+        program == SSEQ_PROGRAM_PROFESSIONAL ? sseq::engine::Program::Professional : sseq::engine::Program::Apprentice;
+    *out = toC(sseq::engine::PlaybackOptions::fromSequence(sequence->sequence, recording != 0, p));
+}
+
 } // extern "C"
 
 namespace {
@@ -1505,6 +1532,14 @@ int sseq_open_messages(const sseq_sequence* sequence, sseq_midi_message** out, s
         (*out)[i] = toC(messages[i]); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
     }
     return 1;
+}
+
+size_t sseq_auto_send_banks(const sseq_sequence* sequence, size_t* indexes, const size_t capacity) {
+    const std::vector<std::size_t> banks = sseq::engine::autoSendBanks(sequence->sequence);
+    for (std::size_t i = 0; i < banks.size() && i < capacity; ++i) {
+        indexes[i] = banks[i]; // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    }
+    return banks.size();
 }
 
 void sseq_render_free(sseq_midi_message* messages) {

@@ -97,6 +97,34 @@ private:
 ///    moves an event before the start plays it at tick 0.
 ///  - Metronome: the click's duration counts MIDI clocks (1/24 quarter note); it ends two clocks
 ///    before that count (1 wraps round to 23), at the latest one clock before the next measure.
+///  - Auto-shuttle with auto-restart: playback runs to the stop time, whose events do not play, and
+///    continues at the rewind time without a stop (no All Notes Off at the wrap).
+///  - No Song Position Pointer is ever sent.
+/// The engine generations differ in a few points; see EngineVersion.
+
+/// Which generation of the original engine to imitate. The three share everything described
+/// above, except:
+///  - v1_01: an event that Time+ moves before tick 0 does not play; no MIDI sync out.
+///  - v3_00: search-back also chases pan (CC 10, after volume), and also for streams whose events
+///    all lie before the start position; the metronome click ends one MIDI clock before its
+///    duration (not two, so a duration of 1 ends at once); with the accent on, the first beat of a
+///    measure clicks with velocity 127.
+enum class EngineVersion : std::uint8_t {
+    v1_01, // TTSSEQ.DLL 1.01, Cakewalk Professional for Windows demo (1992)
+    v2_10, // TTSSEQ.DLL 2.10, Cakewalk Apprentice 1.04 (1993)
+    v3_00, // TTSSEQ30.DLL 3.00, Cakewalk Professional 2.00
+};
+
+/// Which program's use of the engine to imitate. The engine is the same; the programs differ in
+/// what they take from the file.
+///  - Apprentice ignores the file's auto-shuttle settings and does not send auto-send sysex banks.
+///  - Professional applies auto-stop, auto-rewind and auto-restart (PlaybackOptions::fromSequence)
+///    and sends the auto-send sysex banks when the file is opened (autoSendBanks()).
+enum class Program : std::uint8_t {
+    Apprentice,
+    Professional,
+};
+
 struct PlaybackOptions {
     double lookAhead = 0.1;           // seconds scheduled ahead of the clock by each pump()
     double tempoRatio = 1.0;          // playback speed (Cakewalk's 0.50 / 1.00 / 2.00 buttons)
@@ -106,20 +134,29 @@ struct PlaybackOptions {
     bool zeroControllersOnStop = false; // on stop, centre the pitch wheel, zero modulation, lift sustain and send
                                         // "reset all controllers" on every channel of every port in use
     bool sendSysexBanks = true;         // play sysex events (the bank's bytes)
-    std::optional<Tick> loopFrom;       // auto-shuttle: when the position reaches loopThru, continue at loopFrom
-    std::optional<Tick> loopThru;       // (a libsseq extension: Apprentice has no auto-shuttle)
-    bool metronome = false;             // play the sequence's metronome note on every beat
-    bool metronomeAccent = false;       // kept for the file's flag; the MIDI click does not change with it (Cakewalk's
-                                        // accent shows on its PC-speaker click only)
-    int countInMeasures = 0;            // measures of metronome before the start position (recording)
-    bool stopAtEnd = true;              // stop when the last event has played; false while recording
-    bool midiClock = false;             // MIDI sync out: Start or Continue on play, Clock 24 per quarter note, Stop
-    bool startNeverContinue = false;    // always Start, also when playback does not begin at tick 0
-    bool clockWhileStopped = true;      // with midiClock: keep sending Clock at the tempo while stopped (pump())
+    EngineVersion engine = EngineVersion::v2_10; // which generation's differences to reproduce
+    std::optional<Tick> loopFrom;    // auto-shuttle with restart: when the position reaches loopThru (the end of the
+    std::optional<Tick> loopThru;    // sequence when unset), continue at loopFrom; only when playback starts before it
+    std::optional<Tick> stopAt;      // auto-stop: stop when the position reaches this tick (its events do not play);
+                                     // only when playback starts before it
+    std::optional<Tick> rewindTo;    // auto-rewind: when playback stops by itself (end or stopAt), Now goes here
+    bool metronome = false;          // play the sequence's metronome note on every beat
+    bool metronomeAccent = false;    // engine 3.00: the first beat of a measure clicks with velocity 127; the older
+                                     // engines' MIDI click does not change with it (PC-speaker click only)
+    int countInMeasures = 0;         // measures of metronome before the start position (recording)
+    bool stopAtEnd = true;           // stop when the last event has played; false while recording
+    bool midiClock = false;          // MIDI sync out: Start or Continue on play, Clock 24 per quarter note, Stop
+                                     // (ignored by EngineVersion::v1_01)
+    bool startNeverContinue = false; // always Start, also when playback does not begin at tick 0
+    bool clockWhileStopped = true;   // with midiClock: keep sending Clock at the tempo while stopped (pump())
 
     /// Options taken from the sequence's own settings (VARS): chase and zero-controllers flags, metronome
     /// during playback or recording (with count-in and accent), MIDI sync; recording runs past the end.
-    [[nodiscard]] static PlaybackOptions fromSequence(const Sequence& sequence, bool recording = false);
+    /// With Program::Professional also the auto-shuttle: auto-stop, auto-rewind and auto-restart. With all
+    /// three (the case observed) or with rewind and restart, the range loops (loopFrom, loopThru); otherwise
+    /// stopAt and rewindTo. Restart without rewind has nothing to restart into and is ignored.
+    [[nodiscard]] static PlaybackOptions fromSequence(const Sequence& sequence, bool recording = false,
+                                                      Program program = Program::Apprentice);
 };
 
 /// Called when a string event (Text, MCI command, Wave) reaches its time. Runs inside pump().
@@ -170,6 +207,11 @@ private:
 /// What loading the sequence sends: the patch, volume and pan of every stream with events, in
 /// stream-number order, muted streams included (time 0).
 [[nodiscard]] std::vector<MidiMessage> openMessages(const Sequence& sequence);
+
+/// The sysex banks marked auto-send, as indexes into sequence.sysxBanks in bank-number order.
+/// Cakewalk Professional sends them (port 0) when it opens the file; Apprentice does not. Whether
+/// they go before or after openMessages() is not known: no capture has both.
+[[nodiscard]] std::vector<std::size_t> autoSendBanks(const Sequence& sequence);
 
 /// Offline rendering: every message of the sequence between `from` and `thru` (default: the end),
 /// with times in seconds from `from`, as the Transport would produce them without a clock. The

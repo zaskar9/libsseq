@@ -99,7 +99,8 @@ The C header is `include/sseq/sseq.h`; `tests/capi_tests.c` shows every call in 
 
 ## Status
 
-v0.8: model, formats, display text, engine (matched to captured MIDI output of the original),
+v0.8.1: model, formats, display text, engine (matched to captured MIDI output of the original,
+engine versions 1.01, 2.10 and 3.00, Apprentice and Professional program behaviour),
 recorder, the Edit menu complete (Quantize, Length, Transpose, Slide, Controller fill, event filter,
 Cut/Copy/Paste, Undo), C API, Swift package, tool, tests.
 

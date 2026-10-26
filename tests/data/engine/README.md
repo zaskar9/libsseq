@@ -1,7 +1,9 @@
 # Engine oracles
 
 Captures of the MIDI output of Cakewalk Apprentice 1.04 playing the engine test sequences, the
-reference for `sseq::engine` (`testOracles` in `tests/engine_tests.cpp`).
+reference for `sseq::engine` (`testOracles` in `tests/engine_tests.cpp`). The same sequences
+played by two other generations of the engine are in `pro/` and `demo/` (`testOtherEngines`; see
+"Other engines" below).
 
 ## How they were made
 
@@ -84,7 +86,8 @@ timer runs at about 10 ms, so times scatter by up to about 12 ms around the exac
 - MIDI sync: Start when playback begins at tick 0, Continue otherwise; Clock every 1/24 quarter
   note, before the events of its tick; Stop on stop. Clock also runs while stopped. No Song
   Position Pointer is ever sent, also with "Send MIDI SPP" on and after a locate.
-- Metronome: the MIDI click has the same velocity on every beat, accent on or off; a click is
+- Metronome: the MIDI click has the same velocity on every beat, accent on or off (engine 3.00
+  accents, see below); a click is
   played on the end beat. The duration counts MIDI clocks (1/24 quarter note; the dialog accepts
   1 to 24 and says so when given 25). The click ends two clocks before that count (duration 10:
   8 clocks, 20: 18, 24: 22, 2: at once), duration 1 wraps round to 23 clocks, and never later than
@@ -98,5 +101,45 @@ timer runs at about 10 ms, so times scatter by up to about 12 ms around the exac
 - No Song Position Pointer, also with a locate delay set (`E3_SPPD-play`).
 - The auto-stop, auto-rewind and auto-restart bytes of VARS, which Apprentice has no dialog for,
   change nothing when a file sets them (`E3_SHTL-play` plays straight through). Apprentice has no
-  play loop (its help lists auto-shuttle as a Cakewalk Professional feature); the loop range in
-  libsseq is an extension without an oracle.
+  play loop (its help lists auto-shuttle as a Cakewalk Professional feature). Cakewalk
+  Professional, on the 1.01 and 3.00 engines, does loop (below); so the 2.10 engine almost
+  certainly can, and Apprentice does not ask it to.
+
+## Other engines
+
+| Folder | Program | Engine | libsseq options |
+|---|---|---|---|
+| `pro/` | Cakewalk Professional 2.00 | TTSSEQ30.DLL 3.00 | `EngineVersion::v3_00`, `Program::Professional` |
+| `demo/` | Cakewalk Professional for Windows demo (README of 12 May 1992; loads and plays, cannot save) | TTSSEQ.DLL 1.01 | `EngineVersion::v1_01`, `Program::Professional` |
+
+Same emulator, port, capture tool and sequences as above, and the same take names. The takes
+stopped by hand stopped at slightly different positions (listed in
+`testOtherEngines`). `pro/idle.txt` is Professional 2.00 stopped with sync on. There is no
+`E3_SPPD` take for the demo.
+
+The three engines share everything listed above, except:
+
+| Behaviour | 1.01 | 2.10 | 3.00 |
+|---|---|---|---|
+| Search-back | as 2.10 | patch, wheel, CC 1, 64, 7; streams with events after Now | also CC 10 (pan, last), and streams whose events all lie before Now (`E2_CHAS`) |
+| Metronome click length | d - 2 clocks (1 wraps to 23) | d - 2 clocks | d - 1 clocks (1 ends at once) |
+| Metronome accent | no effect | no effect | first beat of the measure at velocity 127 (`ENG_METR`, velocity 110) |
+| Time+ moving an event before 0 | the event does not play (`ENG_PARM`) | plays at tick 0 | plays at tick 0 |
+| MIDI sync out | none, also with the flag on (`ENG_SYNC`) | yes | yes, Clock also while stopped |
+| Sysex timing | on time | on time | 20 to 40 ms after its tick (not modelled) |
+| Timer jitter | about 10 ms | about 10 ms | 1 to 4 ms |
+| Song Position Pointer | never | never | never |
+
+What Cakewalk Professional does that Apprentice does not, on both engines:
+
+- Auto-shuttle (`E3_SHTL`: auto-stop at 960, auto-rewind to 480, auto-restart): play from Now to
+  the stop time, then continue at the rewind time without stopping. The events at the stop tick
+  never play, there is no All Notes Off at the wrap, and the wrap costs a few ms (3 to 5; not
+  modelled). The loop button shows on after loading such a file. Only this combination was
+  captured; libsseq's handling of auto-stop or auto-rewind alone (stop at the stop time, then
+  move Now to the rewind time) follows the program's dialog and is not checked against output.
+- Sending the auto-send sysex banks on File > Open (`ENG_SYSX-open`).
+
+Not modelled either: at the end of a sequence whose last output is not a sounding note-off
+(`ENG_PARM`, `E2_OVLP`), the 1.01 engine stops 120 to 620 ms late, apparently when a slower poll
+notices; the tests compare only the order there.

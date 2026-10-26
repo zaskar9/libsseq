@@ -176,6 +176,8 @@ static void test_sequence_and_files(const char* dir) {
     CHECK(strcmp(sseq_sequence_comments(s), "A comment") == 0);
     CHECK(sseq_sequence_set_sysex_bank(s, 0, "Reset", 1, (const uint8_t*)"\xf0\x7e\x7f\x09\x01\xf7", 6) == 0);
     CHECK(sseq_sequence_sysex_bank_count(s) == 1 && sseq_sequence_sysex_bank_auto_send(s, 0));
+    size_t banks[2] = {9, 9};
+    CHECK(sseq_auto_send_banks(s, banks, 2) == 1 && banks[0] == 0 && banks[1] == 9);
 
     /* Files: memory round trip through both formats, then disk. */
     sseq_data data;
@@ -263,6 +265,24 @@ static void test_transport_and_recorder(void) {
     sseq_render_free(out);
     CHECK(sseq_render(s, &o, 120, -1, &out, &count));
     CHECK(out[0].data[0] == 0xfb); /* away from the start: Continue */
+    sseq_render_free(out);
+
+    /* Engine 1.01 sends no MIDI sync. */
+    CHECK(o.engine == SSEQ_ENGINE_2_10);
+    o.engine = SSEQ_ENGINE_1_01;
+    CHECK(sseq_render(s, &o, 0, -1, &out, &count));
+    CHECK(count == 4 + 16 && out[0].data[0] == 0x92);
+    sseq_render_free(out);
+
+    /* Auto-stop at tick 120: only the first note plays; the stop follows at once. */
+    sseq_playback_options_for_program(s, 0, SSEQ_PROGRAM_PROFESSIONAL, &o);
+    CHECK(!o.has_loop && !o.has_stop_at && !o.has_rewind_to); /* the file has no auto-shuttle */
+    o.send_stream_parameters = 0;
+    o.has_stop_at = 1;
+    o.stop_at = 120;
+    CHECK(sseq_render(s, &o, 0, -1, &out, &count));
+    CHECK(count == 2 + 16);
+    CHECK(fabs(out[2].time - 0.5) < 1e-9 && out[2].data[1] == 123);
     sseq_render_free(out);
 
     /* What loading sends: the streams' patch, volume and pan. */
@@ -460,7 +480,7 @@ static void test_quantize(void) {
 
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
-    CHECK(strcmp(sseq_version(), "0.8.0") == 0);
+    CHECK(strcmp(sseq_version(), "0.8.1") == 0);
     CHECK(strcmp(sseq_last_error(), "") == 0);
     test_sequence_and_files(dir);
     {
