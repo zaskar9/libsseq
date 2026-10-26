@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(libsseq VERSION 0.7.0 LANGUAGES C CXX)
+project(libsseq VERSION 0.8.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -49,10 +49,10 @@ if(SSEQ_BUILD_TESTS)
     add_executable(sseq_engine_tests tests/engine_tests.cpp)
     target_link_libraries(sseq_engine_tests PRIVATE sseq_corpus)
     target_compile_options(sseq_engine_tests PRIVATE ${SSEQ_WARNINGS})
-    add_test(NAME engine COMMAND sseq_engine_tests)
+    add_test(NAME engine COMMAND sseq_engine_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 
     # The corpus: sequence definitions shared by the generator and the corpus test.
-    add_library(sseq_corpus STATIC tests/corpus/sequences.cpp)
+    add_library(sseq_corpus STATIC tests/corpus/sequences.cpp tests/corpus/engine.cpp)
     target_link_libraries(sseq_corpus PUBLIC sseq)
     target_include_directories(sseq_corpus PUBLIC tests)
     target_compile_options(sseq_corpus PRIVATE ${SSEQ_WARNINGS})

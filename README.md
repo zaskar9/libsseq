@@ -10,9 +10,10 @@ functional scope of Cakewalk's `TTSSEQ.DLL` sequencer engine. MIT licensed.
   time format, markers, sysex banks, metronome and MIDI-thru settings, comments.
 - Time conversions: ticks ↔ seconds ↔ measure:beat:tick ↔ SMPTE frames (including drop-frame).
 - Playback engine: a `Transport` (play/stop/seek, loop, mute/solo, tempo ratio, patch and
-  controller chase, metronome with count-in, panic) that schedules timestamped MIDI messages
-  ahead of a caller-supplied clock into a caller-supplied sink, so it runs unchanged on CoreMIDI
-  or in a test; offline `render()`.
+  controller chase, metronome with count-in, MIDI sync out, panic) that schedules timestamped MIDI
+  messages ahead of a caller-supplied clock into a caller-supplied sink, so it runs unchanged on
+  CoreMIDI or in a test; offline `render()`. Its output (message order, note-off handling, what
+  start and stop send) matches captures of Cakewalk Apprentice 1.04's MIDI output.
 - Recording: a `Recorder` turns timestamped input into stream events (note pairing, event filter,
   punch range) and merges the take into a stream.
 - Display text as Cakewalk shows it: key names (`C 5` = 60), durations (`1:080`), event kind names,
@@ -98,15 +99,15 @@ The C header is `include/sseq/sseq.h`; `tests/capi_tests.c` shows every call in 
 
 ## Status
 
-v0.7: model, formats, display text, engine, recorder, the Edit menu complete (Quantize, Length,
-Transpose, Slide, Controller fill, event filter, Cut/Copy/Paste, Undo), C API, Swift package,
-tool, tests.
+v0.8: model, formats, display text, engine (matched to captured MIDI output of the original),
+recorder, the Edit menu complete (Quantize, Length, Transpose, Slide, Controller fill, event filter,
+Cut/Copy/Paste, Undo), C API, Swift package, tool, tests.
 
 Roadmap, one minor version per completed area (each analysed with Cakewalk Apprentice 1.04
 oracles and tested here); patch versions for fixes:
 
-- 0.8, Track and Mark/GoTo menus: Clone, Kill, Wipe, the parameter commands, markers, Search.
-- 0.9, Staff view and Realtime: notation rules (Fill, Trim, Resolution, layers, spelling by key
+- 0.9, Track and Mark/GoTo menus: Clone, Kill, Wipe, the parameter commands, markers, Search.
+- 0.10, Staff view and Realtime: notation rules (Fill, Trim, Resolution, layers, spelling by key
   signature) as display functions, step recording, MIDI thru, model-side Settings.
 - 1.0, API freeze: Swift wrapper in this package, C API review, format-0 SMF oracle, docs.
 

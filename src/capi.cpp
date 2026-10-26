@@ -121,6 +121,9 @@ sseq_playback_options toC(const sseq::engine::PlaybackOptions& o) {
     out.metronome_accent = o.metronomeAccent ? 1 : 0;
     out.count_in_measures = o.countInMeasures;
     out.stop_at_end = o.stopAtEnd ? 1 : 0;
+    out.midi_clock = o.midiClock ? 1 : 0;
+    out.start_never_continue = o.startNeverContinue ? 1 : 0;
+    out.clock_while_stopped = o.clockWhileStopped ? 1 : 0;
     return out;
 }
 
@@ -143,6 +146,9 @@ sseq::engine::PlaybackOptions fromC(const sseq_playback_options* o) {
     out.metronomeAccent = o->metronome_accent != 0;
     out.countInMeasures = o->count_in_measures;
     out.stopAtEnd = o->stop_at_end != 0;
+    out.midiClock = o->midi_clock != 0;
+    out.startNeverContinue = o->start_never_continue != 0;
+    out.clockWhileStopped = o->clock_while_stopped != 0;
     return out;
 }
 
@@ -308,7 +314,7 @@ void applyFilter(const sseq_event_filter* f, sseq::edit::EventFilter& filter) {
 extern "C" {
 
 const char* sseq_version(void) {
-    return "0.7.0";
+    return "0.8.0";
 }
 
 const char* sseq_last_error(void) {
@@ -1478,6 +1484,19 @@ int sseq_render(const sseq_sequence* sequence, const sseq_playback_options* opti
             messages = sseq::engine::render(sequence->sequence, fromC(options), from,
                                             thru < 0 ? std::nullopt : std::optional<sseq::Tick>(thru));
         })) {
+        return 0;
+    }
+    *count = messages.size();
+    *out = new sseq_midi_message[messages.size()]; // NOLINT(cppcoreguidelines-owning-memory)
+    for (std::size_t i = 0; i < messages.size(); ++i) {
+        (*out)[i] = toC(messages[i]); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    }
+    return 1;
+}
+
+int sseq_open_messages(const sseq_sequence* sequence, sseq_midi_message** out, size_t* count) {
+    std::vector<sseq::engine::MidiMessage> messages;
+    if (!guarded([&] { messages = sseq::engine::openMessages(sequence->sequence); })) {
         return 0;
     }
     *count = messages.size();

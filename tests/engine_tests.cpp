@@ -7,6 +7,9 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -83,8 +86,8 @@ Sequence simpleSequence() {
 
 void testRenderSimple() {
     const std::vector<MidiMessage> out = render(simpleSequence());
-    // patch, volume, pan, then note-on/off pairs
-    CHECK_EQ(out.size(), 9U);
+    // patch, volume, pan, then note-on/off pairs, then the stop at the end: All Notes Off on 16 channels
+    CHECK_EQ(out.size(), 9U + 16U);
     CHECK_EQ(hex(out[0]), "c2 28");
     CHECK_EQ(hex(out[1]), "b2 07 64");
     CHECK_EQ(hex(out[2]), "b2 0a 40");
@@ -99,6 +102,9 @@ void testRenderSimple() {
     // Note-off before the next note-on at the same tick.
     CHECK(out[4].isNoteOff());
     CHECK(out[5].isNoteOn());
+    CHECK_EQ(hex(out[9]), "b0 7b 00");
+    CHECK_EQ(hex(out[24]), "bf 7b 00");
+    CHECK(near(out[24].time, 1.5));
 }
 
 void testStreamParametersAndTransforms() {
@@ -110,8 +116,9 @@ void testStreamParametersAndTransforms() {
     t.port = 1;
     t.channel = 5;
     const std::vector<MidiMessage> out = render(s);
-    CHECK_EQ(out.size(), 9U);
+    CHECK_EQ(out.size(), 9U + 16U);
     CHECK_EQ(out[0].port, 1);
+    CHECK_EQ(out.back().port, 1); // All Notes Off goes to the ports in use
     CHECK_EQ(hex(out[0]), "c5 28");
     CHECK_EQ(hex(out[3]), "95 48 46"); // 60+12, 100-30
     CHECK(near(out[3].time, 0.25));    // Time+ 60 ticks = 0.25 s
@@ -120,6 +127,17 @@ void testStreamParametersAndTransforms() {
     t.velPlus = -127;
     const std::vector<MidiMessage> quiet = render(s);
     CHECK_EQ(hex(quiet[3]), "95 48 01");
+    // Key+ beyond 0..127 folds by octaves; Time- before the start plays at the start.
+    t.velPlus = 0;
+    t.keyPlus = 70; // 60 + 70 = 130 -> 118
+    t.timePlus = -60;
+    const std::vector<MidiMessage> folded = render(s);
+    CHECK_EQ(hex(folded[3]), "95 76 64");
+    CHECK(near(folded[3].time, 0.0));
+    // the first note keeps its duration from the start: its note-off at tick 120 = 0.5 s
+    CHECK(std::ranges::any_of(folded, [](const MidiMessage& m) { return hex(m) == "95 76 00" && near(m.time, 0.5); }));
+    t.keyPlus = -70; // 60 - 70 = -10 -> 2
+    CHECK_EQ(hex(render(s)[3]), "95 02 64");
 }
 
 void testMuteAndSolo() {
@@ -137,8 +155,14 @@ void testMuteAndSolo() {
     tr.play();
     clock.time = 10;
     tr.pump();
-    CHECK(std::ranges::all_of(sink.messages, [](const MidiMessage& m) { return m.channel() == 3; }));
-    CHECK_EQ(sink.messages.size(), 2U);
+    const auto notes = [](const std::vector<MidiMessage>& v) {
+        std::vector<MidiMessage> out;
+        std::ranges::copy_if(v, std::back_inserter(out),
+                             [](const MidiMessage& m) { return (m.status() & 0xf0) == 0x90; });
+        return out;
+    };
+    CHECK(std::ranges::all_of(notes(sink.messages), [](const MidiMessage& m) { return m.channel() == 3; }));
+    CHECK_EQ(notes(sink.messages).size(), 2U);
     tr.stop();
 
     RecordingSink sink2;
@@ -151,8 +175,8 @@ void testMuteAndSolo() {
     tr2.play();
     clock.time = 10;
     tr2.pump();
-    CHECK(std::ranges::all_of(sink2.messages, [](const MidiMessage& m) { return m.channel() == 2; }));
-    CHECK_EQ(sink2.messages.size(), 6U);
+    CHECK(std::ranges::all_of(notes(sink2.messages), [](const MidiMessage& m) { return m.channel() == 2; }));
+    CHECK_EQ(notes(sink2.messages).size(), 6U);
 }
 
 void testLookAheadAndPump() {
@@ -178,9 +202,11 @@ void testLookAheadAndPump() {
     CHECK_EQ(sink.messages.size(), 6U);
     CHECK(tr.playing());
     clock.time = 6.5;
-    CHECK(!tr.pump()); // end reached: stopped by itself
+    CHECK(!tr.pump()); // end reached: stopped by itself, with what a stop sends
     CHECK(!tr.playing());
     CHECK_EQ(tr.now(), 360);
+    CHECK_EQ(sink.messages.size(), 6U + 16U);
+    CHECK_EQ(hex(sink.messages.back()), "bf 7b 00");
     CHECK(sink.flushes >= 3);
     // Every message exactly once, in time order.
     for (std::size_t i = 1; i < sink.messages.size(); ++i) {
@@ -206,34 +232,38 @@ void testStopCutsNotesAndZeroesControllers() {
     CHECK_EQ(sink.discards, 1); // pending future messages are dropped before the note-offs
     CHECK(!tr.playing());
     CHECK_EQ(tr.now(), 48); // 0.2 s = 48 ticks
-    // note-off at 0.2, then on all 16 channels of the one port in use: sustain up, pitch wheel
-    // centred, modulation zero, reset all controllers (Cakewalk's "Zero continuous controllers")
-    CHECK_EQ(sink.messages.size(), 2U + 16U * 4U);
-    CHECK_EQ(hex(sink.messages[1]), "92 3c 00");
-    CHECK(near(sink.messages[1].time, 0.2));
-    CHECK_EQ(hex(sink.messages[2]), "b0 40 00");
-    CHECK_EQ(hex(sink.messages[3]), "e0 00 40");
-    CHECK_EQ(hex(sink.messages[4]), "b0 01 00");
-    CHECK_EQ(hex(sink.messages[5]), "b0 79 00");
-    CHECK_EQ(hex(sink.messages[2 + 4 * 15]), "bf 40 00");
-    CHECK(near(sink.messages[65].time, 0.2));
+    // Per channel: the sounding notes' offs, then All Notes Off; then on every channel the reset:
+    // pitch wheel centred, modulation zero, sustain up, reset all controllers.
+    CHECK_EQ(sink.messages.size(), 1U + 1U + 16U + 16U * 4U);
+    CHECK_EQ(hex(sink.messages[1]), "b0 7b 00");
+    CHECK_EQ(hex(sink.messages[2]), "b1 7b 00");
+    CHECK_EQ(hex(sink.messages[3]), "92 3c 00");
+    CHECK(near(sink.messages[3].time, 0.2));
+    CHECK_EQ(hex(sink.messages[4]), "b2 7b 00");
+    CHECK_EQ(hex(sink.messages[18]), "e0 00 40");
+    CHECK_EQ(hex(sink.messages[19]), "b0 01 00");
+    CHECK_EQ(hex(sink.messages[20]), "b0 40 00");
+    CHECK_EQ(hex(sink.messages[21]), "b0 79 00");
+    CHECK_EQ(hex(sink.messages.back()), "bf 79 00");
+    CHECK(near(sink.messages.back().time, 0.2));
     // Resuming continues from the stop position (tick 48, inside the first note): the first note
     // is not repeated, and the second note-on at tick 120 comes 72 ticks = 0.3 s after the restart.
+    const std::size_t before = sink.messages.size();
     clock.time = 1.0;
     tr.play();
-    CHECK_EQ(sink.messages.size(), 66U); // nothing due within the look-ahead yet
+    CHECK_EQ(sink.messages.size(), before); // nothing due within the look-ahead yet
     clock.time = 1.3;
     tr.pump();
-    CHECK_EQ(sink.messages.size(), 67U);
-    CHECK_EQ(hex(sink.messages[66]), "92 3e 5a");
-    CHECK(near(sink.messages[66].time, 1.3));
+    CHECK_EQ(sink.messages.size(), before + 1);
+    CHECK_EQ(hex(sink.messages[before]), "92 3e 5a");
+    CHECK(near(sink.messages[before].time, 1.3));
     tr.stop();
-    // Panic: stop, then all-notes-off and the controller reset on every channel.
+    // Panic while stopped: All Notes Off and the controller reset on every channel.
     sink.messages.clear();
     tr.panic();
-    CHECK_EQ(sink.messages.size(), 16U * 5U);
+    CHECK_EQ(sink.messages.size(), 16U + 16U * 4U);
     CHECK_EQ(hex(sink.messages[0]), "b0 7b 00");
-    CHECK_EQ(hex(sink.messages[1]), "b0 40 00");
+    CHECK_EQ(hex(sink.messages[16]), "e0 00 40");
 }
 
 /// Stopping while a note-on is already scheduled ahead (within the look-ahead): the output is told
@@ -262,8 +292,16 @@ void testStopDiscardsScheduledNotes() {
         }
     }
     CHECK(!futureOn);
-    CHECK(sink.messages.back().isNoteOff());
-    CHECK(near(sink.messages.back().time, 0.35));
+    // The first note's note-off (at 0.5) was dropped with the rest, so the stop ends that note; the
+    // second note never started and gets no note-off.
+    std::vector<std::string> offsAtStop;
+    for (const MidiMessage& m : sink.messages) {
+        if (m.isNoteOff() && near(m.time, 0.35)) {
+            offsAtStop.push_back(hex(m));
+        }
+    }
+    CHECK_EQ(offsAtStop.size(), 1U);
+    CHECK_EQ(offsAtStop.front(), "92 3c 00");
 }
 
 void testSeekAndChase() {
@@ -282,10 +320,10 @@ void testSeekAndChase() {
     CHECK_EQ(hex(out[0]), "c2 28"); // stream parameters
     CHECK_EQ(hex(out[1]), "b2 07 64");
     CHECK_EQ(hex(out[2]), "b2 0a 40");
-    // chased, sorted by (port, status, controller): b2 01 -> 70, c2 -> 7, e2 -> 1000
-    CHECK_EQ(hex(out[3]), "b2 01 46");
-    CHECK_EQ(hex(out[4]), "c2 07");
-    CHECK_EQ(hex(out[5]), "e2 68 47");
+    // chased in the order patch, wheel, modulation, sustain, volume: c2 -> 7, e2 -> 1000, b2 01 -> 70
+    CHECK_EQ(hex(out[3]), "c2 07");
+    CHECK_EQ(hex(out[4]), "e2 68 47");
+    CHECK_EQ(hex(out[5]), "b2 01 46");
     CHECK(near(out[5].time, 0.0));
     // The second note started before the position, so it is not played and gets no note-off;
     // the third note follows.
@@ -294,7 +332,16 @@ void testSeekAndChase() {
     CHECK_EQ(hex(out[7]), "92 40 00");
     o.chase = false;
     const std::vector<MidiMessage> plain = render(s, o, 130);
-    CHECK_EQ(plain.size(), 5U); // 3 parameters, the third note's on and off
+    CHECK_EQ(plain.size(), 5U + 16U); // 3 parameters, the third note's on and off, the stop
+    // A stream with nothing left at the start position is not chased.
+    Stream& early = s.stream(1);
+    early.channel = 4;
+    early.events = {Event::patch(0, 4, 30), Event::controller(10, 4, 7, 60)};
+    o.chase = true;
+    o.sendStreamParameters = false;
+    const std::vector<MidiMessage> chased = render(s, o, 130);
+    CHECK(std::ranges::none_of(chased, [](const MidiMessage& m) { return m.channel() == 4 && m.status() != 0xb4; }));
+    CHECK(std::ranges::none_of(chased, [](const MidiMessage& m) { return hex(m) == "c4 1e"; }));
 }
 
 void testTempoChangeAndRatio() {
@@ -384,7 +431,7 @@ void testStreamLoopAndCorpus() {
     PlaybackOptions o;
     o.sendStreamParameters = false;
     const std::vector<MidiMessage> out = render(s, o);
-    CHECK_EQ(out.size(), 6U);
+    CHECK_EQ(out.size(), 6U + 16U);
     CHECK(near(out[2].time, 2.0)); // second repetition at tick 480
     CHECK(near(out[4].time, 4.0));
 
@@ -394,8 +441,8 @@ void testStreamLoopAndCorpus() {
     bass.channel = 1;
     bass.events.push_back(Event::note(0, 1, 36, 100, 1100)); // ends at 1100: inside the third repetition
     const std::vector<MidiMessage> forever = render(s, o);
-    // bass on/off, three repetitions of the looped note (the third cut short at 1100)
-    CHECK_EQ(forever.size(), 8U);
+    // bass on/off, three repetitions of the looped note (the third cut short at 1100), the stop
+    CHECK_EQ(forever.size(), 8U + 16U);
     CHECK(near(forever.back().time, 1100 / 240.0));
     std::size_t cut = 0;
     for (const MidiMessage& m : forever) {
@@ -406,7 +453,7 @@ void testStreamLoopAndCorpus() {
     CHECK_EQ(cut, 1U);
     s.streams.pop_back();
     t.reps = 9999;
-    CHECK_EQ(render(s, o).size(), 2U); // no non-looping stream: played once
+    CHECK_EQ(render(s, o).size(), 2U + 16U); // no non-looping stream: played once
     t.reps = 3;
 
     // The corpus sequences render: one note-on and one note-off per note, times monotonic.
@@ -419,11 +466,10 @@ void testStreamLoopAndCorpus() {
                 continue;
             }
             const Tick shift = tr.timePlus.value_or(0);
-            notes +=
-                static_cast<std::size_t>(reps) *
-                static_cast<std::size_t>(std::ranges::count_if(tr.events, [shift](const Event& e) {
-                    return e.kind == EventKind::Note && e.time + shift >= 0; // Time- can push a note before the start
-                }));
+            (void)shift; // Time- that pushes a note before the start plays it at the start
+            notes += static_cast<std::size_t>(reps) *
+                     static_cast<std::size_t>(
+                         std::ranges::count_if(tr.events, [](const Event& e) { return e.kind == EventKind::Note; }));
         }
         const auto ons = static_cast<std::size_t>(std::ranges::count_if(r, &MidiMessage::isNoteOn));
         const auto offs = static_cast<std::size_t>(std::ranges::count_if(r, &MidiMessage::isNoteOff));
@@ -445,22 +491,25 @@ void testMetronome() {
     PlaybackOptions o;
     o.sendStreamParameters = false;
     o.metronome = true;
-    o.metronomeAccent = true;
+    o.metronomeAccent = true;                          // does not change the MIDI click
     const std::vector<MidiMessage> out = render(s, o); // notes end at tick 360
     std::vector<MidiMessage> clicks;
-    std::ranges::copy_if(out, std::back_inserter(clicks), [](const MidiMessage& m) { return m.port == 1; });
-    // beats 0, 120, 240 (beat 360 is the end and not played), on and off each
-    CHECK_EQ(clicks.size(), 6U);
-    CHECK_EQ(hex(clicks[0]), "99 2a 64"); // downbeat at full velocity
+    std::ranges::copy_if(out, std::back_inserter(clicks),
+                         [](const MidiMessage& m) { return m.port == 1 && (m.status() & 0xf0) == 0x90; });
+    // beats 0, 120, 240 and the end beat 360, whose note-off comes with the stop
+    CHECK_EQ(clicks.size(), 8U);
+    CHECK_EQ(hex(clicks[0]), "99 2a 64");
     CHECK(near(clicks[0].time, 0.0));
     CHECK_EQ(hex(clicks[1]), "99 2a 00");
-    CHECK(near(clicks[1].time, 10 / 240.0));
-    CHECK_EQ(hex(clicks[2]), "99 2a 4b"); // other beats at 3/4
+    CHECK(near(clicks[1].time, 40 / 240.0)); // duration 10 MIDI clocks: off after 8 clocks = 40 ticks
+    CHECK_EQ(hex(clicks[2]), "99 2a 64");    // same velocity on every beat
     CHECK(near(clicks[2].time, 0.5));
+    CHECK(near(clicks[6].time, 1.5));
+    CHECK(near(clicks[7].time, 1.5));
     CHECK(std::ranges::is_sorted(out, {}, &MidiMessage::time));
     // Velocity 0 disables the metronome note.
     s.metronome.velocity = 0;
-    CHECK_EQ(render(s, o).size(), 6U);
+    CHECK_EQ(render(s, o).size(), 6U + 16U);
     s.metronome.velocity = 100;
 
     // Count-in: two measures of 3/4 at 120 bpm = 3 s before the sequence starts.
@@ -512,6 +561,213 @@ void testMetronome() {
     CHECK(rec.metronome);
     CHECK(rec.metronomeAccent);
     CHECK_EQ(rec.countInMeasures, 1);
+}
+
+// ---------------------------------------------------------------- oracles
+
+/// One line of a capture: milliseconds and the message bytes in hex ("90 3c 64").
+struct Captured {
+    double ms = 0;
+    std::string bytes;
+};
+
+std::vector<Captured> readCapture(const std::string& path) {
+    std::vector<Captured> out;
+    std::ifstream in(path);
+    CHECK(in.good());
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        std::istringstream fields(line);
+        Captured c;
+        fields >> c.ms;
+        std::string byte;
+        while (fields >> byte) {
+            c.bytes += (c.bytes.empty() ? "" : " ") + byte;
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+/// One playback of a capture: from the first message that is not a MIDI clock to the end of the
+/// first All Notes Off burst and the controller reset that may follow it; times from its start.
+std::vector<Captured> onePlayback(std::vector<Captured> c) {
+    const auto first = std::ranges::find_if(c, [](const Captured& m) { return m.bytes != "f8"; });
+    c.erase(c.begin(), first);
+    for (std::size_t i = 0; i < c.size(); ++i) {
+        if (c[i].bytes == "bf 7b 00") {
+            std::size_t end = i + 1;
+            while (end < c.size() && c[end].ms - c[i].ms < 100 && c[end].bytes != "f8" &&
+                   (c[end].bytes[0] == 'b' || c[end].bytes[0] == 'e')) {
+                ++end;
+            }
+            c.resize(end);
+            break;
+        }
+    }
+    const double t0 = c.empty() ? 0 : c.front().ms;
+    for (Captured& m : c) {
+        m.ms -= t0;
+    }
+    return c;
+}
+
+/// Every message the transport sends (short and sysex), as playing from `from` to `thru` (the end
+/// when absent) with the sequence's own settings.
+std::vector<Captured> playback(const Sequence& s, const Tick from, const std::optional<Tick> thru) {
+    class AllSink final : public MidiSink {
+    public:
+        std::vector<Captured> out;
+        void send(const MidiMessage& m) override { out.push_back({m.time * 1000, hex(m)}); }
+        void sendSysex(const double time, int /*port*/, const std::vector<std::uint8_t>& bytes) override {
+            std::string h;
+            for (const std::uint8_t b : bytes) {
+                std::array<char, 4> buf{};
+                std::snprintf(buf.data(), buf.size(), "%02x", b);
+                h += (h.empty() ? "" : " ") + std::string(buf.data());
+            }
+            out.push_back({time * 1000, h});
+        }
+    };
+    FakeClock clock;
+    AllSink sink;
+    PlaybackOptions o = PlaybackOptions::fromSequence(s);
+    o.lookAhead = 0;
+    Transport tr(s, clock, sink, o);
+    tr.seek(from);
+    tr.play();
+    const Tick end = thru.value_or(tr.endTick());
+    clock.time = s.tempoMap.tickToSeconds(end) - s.tempoMap.tickToSeconds(from);
+    tr.pump();
+    if (tr.playing()) {
+        tr.stop();
+    }
+    return sink.out;
+}
+
+/// The original engine's output for the engine test sequences (tests/data/engine/README.md): the
+/// same messages in the same order, and (where the capture's timing is meaningful) within 25 ms.
+void testOracles(const std::string& data) {
+    struct Take {
+        const char* capture;
+        const char* sequence; // in engine/src, or src/ for the corpus songs
+        Tick from;
+        Tick thru; // -1: to the end
+        bool times;
+    };
+    const std::array<Take, 27> takes = {{
+        {"ENG_ORDR-play", "engine/src/ENG_ORDR", 0, -1, true},
+        {"ENG_ORDR-stop", "engine/src/ENG_ORDR", 0, 585, true},
+        {"ENG_ORDR-resume", "engine/src/ENG_ORDR", 585, 1176, false}, // restarted 17 ticks early
+        {"ENG_MULT-play", "engine/src/ENG_MULT", 0, -1, true},
+        {"ENG_PARM-play", "engine/src/ENG_PARM", 0, -1, true},
+        {"ENG_TMPO-play", "engine/src/ENG_TMPO", 0, -1, true},
+        {"ENG_CHAS-play", "engine/src/ENG_CHAS", 960, -1, true},
+        {"ENG_LOOP-play", "engine/src/ENG_LOOP", 0, -1, true},
+        {"ENG_SYSX-play", "engine/src/ENG_SYSX", 0, -1, true},
+        {"ENG_SYNC-play", "engine/src/ENG_SYNC", 0, 609, true},
+        {"ENG_METR-play", "engine/src/ENG_METR", 0, -1, true},
+        {"E2_KORD-play", "engine/src/E2_KORD", 0, -1, true},
+        {"E2_OVLP-play", "engine/src/E2_OVLP", 0, -1, true},
+        {"E2_STOP-play", "engine/src/E2_STOP", 0, 390, true},
+        {"E2_CHAS-play", "engine/src/E2_CHAS", 960, -1, true},
+        {"E2_METR-play", "engine/src/E2_METR", 0, -1, true},
+        {"E2_SPP-play", "engine/src/E2_SPP", 480, -1, true},
+        {"FURELISE-play", "src/FURELISE", 0, -1, true},
+        {"E3_MA-play", "engine/src/E3_MA", 0, -1, true}, // click durations 1, 20, 10, 40, 2, 24
+        {"E3_MB-play", "engine/src/E3_MB", 0, -1, true},
+        {"E3_MC-play", "engine/src/E3_MC", 0, -1, true},
+        {"E3_MD-play", "engine/src/E3_MD", 0, -1, true},
+        {"E3_ME-play", "engine/src/E3_ME", 0, -1, true},
+        {"E3_MF-play", "engine/src/E3_MF", 0, -1, true},
+        {"E3_DENS-stop", "engine/src/E3_DENS", 0, 561, true},
+        {"E3_SPPD-play", "engine/src/E3_SPPD", 480, -1, true},
+        {"E3_SHTL-play", "engine/src/E3_SHTL", 0, -1, true}, // the auto-shuttle bytes are ignored
+    }};
+    for (const Take& take : takes) {
+        const Sequence s = wrk::readFile(data + "/" + take.sequence + ".WRK");
+        const std::vector<Captured> want = onePlayback(readCapture(data + "/engine/" + take.capture + ".txt"));
+        const std::vector<Captured> got =
+            playback(s, take.from, take.thru < 0 ? std::nullopt : std::optional<Tick>(take.thru));
+        CHECK_EQ(got.size(), want.size());
+        double worst = 0;
+        for (std::size_t i = 0; i < std::min(got.size(), want.size()); ++i) {
+            if (got[i].bytes != want[i].bytes) {
+                std::fprintf(stderr, "%s: message %zu is %s, the capture has %s\n", take.capture, i,
+                             got[i].bytes.c_str(), want[i].bytes.c_str());
+                CHECK(false);
+                break;
+            }
+            worst = std::max(worst, std::fabs(got[i].ms - want[i].ms));
+        }
+        if (take.times && worst >= 25) {
+            std::fprintf(stderr, "%s: times differ by up to %.1f ms\n", take.capture, worst);
+            CHECK(worst < 25);
+        }
+    }
+    // Loading a file: the streams' patch, volume and pan (clocks of a previous file's sync left out).
+    const std::array<std::pair<const char*, const char*>, 5> opens = {{
+        {"ENG_ORDR-open", "engine/src/ENG_ORDR"},
+        {"ENG_MULT-open", "engine/src/ENG_MULT"},
+        {"ENG_SYSX-open", "engine/src/ENG_SYSX"}, // the auto-send bank is not sent
+        {"E2_CHAS-open", "engine/src/E2_CHAS"},
+        {"FURELISE-open", "src/FURELISE"},
+    }};
+    for (const auto& [capture, sequence] : opens) {
+        std::vector<std::string> want;
+        for (const Captured& c : readCapture(data + "/engine/" + capture + ".txt")) {
+            if (c.bytes != "f8") {
+                want.push_back(c.bytes);
+            }
+        }
+        std::vector<std::string> got;
+        for (const MidiMessage& m : openMessages(wrk::readFile(data + "/" + sequence + ".WRK"))) {
+            got.push_back(hex(m));
+        }
+        CHECK(got == want);
+    }
+    // The original engine sends no Song Position Pointer, also with "Send MIDI SPP" on and after a
+    // locate, and keeps sending Clock while stopped.
+    for (const char* capture : {"E2_SPP-locate", "E2_SPP-play", "E3_SPPD-play"}) {
+        const std::vector<Captured> sync = readCapture(data + "/engine/" + std::string(capture) + ".txt");
+        CHECK(std::ranges::none_of(sync, [](const Captured& c) { return c.bytes.starts_with("f2"); }));
+    }
+    const std::vector<Captured> idle = readCapture(data + "/engine/ENG_SYNC-open.txt");
+    CHECK(idle.size() > 100);
+    CHECK(std::ranges::all_of(idle, [](const Captured& c) { return c.bytes == "f8"; }));
+}
+
+void testMidiClock() {
+    Sequence s = simpleSequence(); // 120 ppq: a clock every 5 ticks = 1/48 s at 120 bpm
+    PlaybackOptions o;
+    o.sendStreamParameters = false;
+    o.midiClock = true;
+    std::vector<MidiMessage> out = render(s, o);
+    CHECK_EQ(hex(out[0]), "fa");
+    CHECK_EQ(hex(out[1]), "f8");
+    CHECK_EQ(hex(out[2]), "92 3c 64");
+    CHECK(near(out[3].time, 1 / 48.0));
+    const auto clocks = std::ranges::count_if(out, [](const MidiMessage& m) { return hex(m) == "f8"; });
+    CHECK_EQ(clocks, 73);                      // ticks 0, 5, ... 360
+    CHECK_EQ(hex(out[out.size() - 17]), "fc"); // Stop before the All Notes Off burst
+    out = render(s, o, 120);
+    CHECK_EQ(hex(out[0]), "fb"); // away from the start: Continue
+    o.startNeverContinue = true;
+    out = render(s, o, 120);
+    CHECK_EQ(hex(out[0]), "fa");
+    // While stopped, pump() keeps the clock running at the tempo.
+    FakeClock clock;
+    RecordingSink sink;
+    o.lookAhead = 0;
+    Transport tr(s, clock, sink, o);
+    CHECK(!tr.pump());
+    clock.time = 0.5;
+    CHECK(!tr.pump());
+    CHECK_EQ(sink.messages.size(), 25U); // 0 .. 0.5 s at 1/48 s
+    CHECK(std::ranges::all_of(sink.messages, [](const MidiMessage& m) { return hex(m) == "f8"; }));
 }
 
 MidiMessage input(const double time, std::initializer_list<std::uint8_t> bytes) {
@@ -622,7 +878,11 @@ void testRecorder() {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        std::fprintf(stderr, "usage: sseq_engine_tests <tests/data dir>\n");
+        return 2;
+    }
     testRenderSimple();
     testStreamParametersAndTransforms();
     testMuteAndSolo();
@@ -636,5 +896,7 @@ int main() {
     testStreamLoopAndCorpus();
     testMetronome();
     testRecorder();
+    testMidiClock();
+    testOracles(argv[1]);
     return test::report("engine tests");
 }

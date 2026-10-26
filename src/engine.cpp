@@ -1,9 +1,13 @@
 // libsseq: playback engine implementation.
+//
+// The output order and the note-off, stop and start behaviour follow captures of the original
+// engine's MIDI output (see tests/data/engine/README.md); engine.hpp summarises them.
 #include "sseq/engine.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <ranges>
 #include <tuple>
@@ -34,6 +38,8 @@ PlaybackOptions PlaybackOptions::fromSequence(const Sequence& sequence, const bo
     o.metronomeAccent = sequence.vars.metronomeAccent();
     o.countInMeasures = recording ? sequence.vars.countIn() : 0;
     o.stopAtEnd = !recording;
+    o.midiClock = sequence.vars.transmitMidiSync();
+    o.startNeverContinue = !sequence.vars.useContinue();
     return o;
 }
 
@@ -41,31 +47,57 @@ PlaybackOptions PlaybackOptions::fromSequence(const Sequence& sequence, const bo
 
 namespace {
 
+constexpr Tick kNever = std::numeric_limits<Tick>::max();
+
 constexpr std::uint8_t clamp7(const int v) noexcept {
     return static_cast<std::uint8_t>(std::clamp(v, 0, 127));
 }
 
-enum class ItemKind : std::uint8_t { NoteOff, Control, NoteOn, Sysex, String };
+/// Key+ that leaves 0..127 folds the key back by octaves (observed: 120 + 12 plays 120, 5 - 12 plays 5).
+constexpr std::uint8_t foldKey(int key) noexcept {
+    while (key > 127) {
+        key -= 12;
+    }
+    while (key < 0) {
+        key += 12;
+    }
+    return static_cast<std::uint8_t>(key);
+}
 
-/// One output of the playlist: a short message, a sysex bank, or a string event.
+enum class ItemKind : std::uint8_t { NoteOn, Control, Sysex, String };
+
+/// One output of the playlist: a note (its note-off goes to the pending heap when it plays), another
+/// short message, a sysex bank, or a string event.
 struct Item {
     Tick tick = 0;
     ItemKind kind = ItemKind::NoteOn;
     int stream = 0; // stream number
+    int rank = 0;   // position of the stream in stream-number order
+    int index = 0;  // position of the event in its stream (counting repetitions)
     int port = 0;
     std::uint8_t size = 0;
     std::array<std::uint8_t, 3> data{};
+    Tick offTick = 0;             // NoteOn
     int bank = -1;                // Sysex
     const Event* event = nullptr; // String
 };
 
-MidiMessage toMessage(const Item& it, const double time) {
+MidiMessage message(const double time, const int port, const std::uint8_t size, const std::array<std::uint8_t, 3>& d) {
     MidiMessage m;
     m.time = time;
-    m.port = it.port;
-    m.size = it.size;
-    m.data = it.data;
+    m.port = port;
+    m.size = size;
+    m.data = d;
     return m;
+}
+
+MidiMessage message3(const double time, const int port, const std::uint8_t status, const std::uint8_t d1,
+                     const std::uint8_t d2) {
+    return message(time, port, 3, {status, d1, d2});
+}
+
+MidiMessage message1(const double time, const int port, const std::uint8_t status) {
+    return message(time, port, 1, {status, 0, 0});
 }
 
 Item shortItem(const Tick tick, const ItemKind kind, const Stream& t, const std::uint8_t status, const std::uint8_t d1,
@@ -106,11 +138,54 @@ Tick nonLoopingEnd(const Sequence& sequence) {
     return end;
 }
 
-/// Builds the sorted list of outputs of all streams (mute and solo are applied at scheduling time).
-std::vector<Item> buildPlaylist(const Sequence& sequence) {
-    std::vector<Item> items;
-    const Tick sequenceEnd = nonLoopingEnd(sequence);
+/// The streams in stream-number order.
+std::vector<const Stream*> streamsByNumber(const Sequence& sequence) {
+    std::vector<const Stream*> out;
+    out.reserve(sequence.streams.size());
     for (const Stream& t : sequence.streams) {
+        out.push_back(&t);
+    }
+    std::ranges::stable_sort(out, {}, &Stream::number);
+    return out;
+}
+
+/// The output channel of a stream's parameters: the forced channel, else the first MIDI event's.
+std::uint8_t parameterChannel(const Stream& t) {
+    if (t.channel) {
+        return *t.channel & 0x0fU;
+    }
+    if (const auto first = std::ranges::find_if(t.events, &Event::isMidi); first != t.events.end()) {
+        return first->channel & 0x0fU;
+    }
+    return 0;
+}
+
+/// Patch, volume and pan of a stream (those that are set), at time 0.
+void appendStreamParameters(std::vector<MidiMessage>& out, const Stream& t, const double time) {
+    const std::uint8_t ch = parameterChannel(t);
+    if (t.patch) {
+        out.push_back(message(time, t.port, 2, {static_cast<std::uint8_t>(0xc0 | ch), clamp7(*t.patch), 0}));
+    }
+    if (t.volume && *t.volume >= 0) {
+        out.push_back(message3(time, t.port, static_cast<std::uint8_t>(0xb0 | ch), 7, clamp7(*t.volume)));
+    }
+    if (t.pan && *t.pan >= 0) {
+        out.push_back(message3(time, t.port, static_cast<std::uint8_t>(0xb0 | ch), 10, clamp7(*t.pan)));
+    }
+}
+
+struct Playlist {
+    std::vector<Item> items;
+    Tick end = 0; // the last tick anything happens (note-offs included)
+};
+
+/// Builds the sorted list of outputs of all streams (mute and solo are applied at scheduling time).
+Playlist buildPlaylist(const Sequence& sequence) {
+    Playlist p;
+    const Tick sequenceEnd = nonLoopingEnd(sequence);
+    const std::vector<const Stream*> ordered = streamsByNumber(sequence);
+    for (std::size_t rank = 0; rank < ordered.size(); ++rank) {
+        const Stream& t = *ordered[rank];
         int reps = std::max(1, t.reps.value_or(1));
         const Tick offset = t.timePlus.value_or(0);
         const Tick period = reps > 1 ? loopPeriod(sequence, t) : 0;
@@ -123,151 +198,128 @@ std::vector<Item> buildPlaylist(const Sequence& sequence) {
                 reps = static_cast<int>((sequenceEnd - offset + period - 1) / period);
             }
         }
+        int index = 0;
         for (int rep = 0; rep < reps; ++rep) {
             const Tick shift = offset + rep * period;
             for (const Event& e : t.events) {
-                const Tick tick = e.time + shift;
-                if (tick < 0) {
-                    continue; // Time- pushed it before the start
-                }
+                // Time- that moves an event before the start plays it at the start.
+                const Tick tick = std::max<Tick>(0, e.time + shift);
                 if (clip && tick >= *clip) {
                     continue;
                 }
                 const std::uint8_t ch = t.channel.value_or(e.channel) & 0x0fU;
+                Item it;
                 switch (e.kind) {
                 case EventKind::Note: {
-                    const std::uint8_t key = clamp7(e.data1 + t.keyPlus);
-                    const std::uint8_t vel = std::max<std::uint8_t>(1, clamp7(e.data2 + t.velPlus));
-                    items.push_back(shortItem(tick, ItemKind::NoteOn, t, 0x90 | ch, key, vel));
-                    Tick off = tick + std::max<Tick>(1, e.duration);
+                    it = shortItem(tick, ItemKind::NoteOn, t, 0x90 | ch, foldKey(e.data1 + t.keyPlus),
+                                   std::max<std::uint8_t>(1, clamp7(e.data2 + t.velPlus)));
+                    it.offTick = tick + std::max<Tick>(1, e.duration);
                     if (clip) {
-                        off = std::min(off, *clip);
+                        it.offTick = std::min(it.offTick, *clip);
                     }
-                    items.push_back(shortItem(off, ItemKind::NoteOff, t, 0x90 | ch, key, 0));
                     break;
                 }
                 case EventKind::KeyAftertouch:
-                    items.push_back(
-                        shortItem(tick, ItemKind::Control, t, 0xa0 | ch, clamp7(e.data1 + t.keyPlus), clamp7(e.data2)));
+                    it =
+                        shortItem(tick, ItemKind::Control, t, 0xa0 | ch, foldKey(e.data1 + t.keyPlus), clamp7(e.data2));
                     break;
                 case EventKind::Controller:
-                    items.push_back(shortItem(tick, ItemKind::Control, t, 0xb0 | ch, clamp7(e.data1), clamp7(e.data2)));
+                    it = shortItem(tick, ItemKind::Control, t, 0xb0 | ch, clamp7(e.data1), clamp7(e.data2));
                     break;
                 case EventKind::Patch:
-                    items.push_back(shortItem(tick, ItemKind::Control, t, 0xc0 | ch, clamp7(e.data1)));
+                    it = shortItem(tick, ItemKind::Control, t, 0xc0 | ch, clamp7(e.data1));
                     break;
                 case EventKind::ChannelAftertouch:
-                    items.push_back(shortItem(tick, ItemKind::Control, t, 0xd0 | ch, clamp7(e.data1)));
+                    it = shortItem(tick, ItemKind::Control, t, 0xd0 | ch, clamp7(e.data1));
                     break;
                 case EventKind::PitchWheel: {
                     const int v = std::clamp(e.data1 + 8192, 0, 16383);
-                    items.push_back(shortItem(tick, ItemKind::Control, t, 0xe0 | ch,
-                                              static_cast<std::uint8_t>(v & 0x7f), (v >> 7) & 0x7f));
+                    it = shortItem(tick, ItemKind::Control, t, 0xe0 | ch, static_cast<std::uint8_t>(v & 0x7f),
+                                   (v >> 7) & 0x7f);
                     break;
                 }
-                case EventKind::Sysex: {
-                    Item it;
+                case EventKind::Sysex:
                     it.tick = tick;
                     it.kind = ItemKind::Sysex;
                     it.stream = t.number;
                     it.port = t.port;
                     it.bank = e.data1;
-                    items.push_back(it);
                     break;
-                }
                 case EventKind::MciCommand:
                 case EventKind::Wave:
-                case EventKind::Text: {
-                    Item it;
+                case EventKind::Text:
                     it.tick = tick;
                     it.kind = ItemKind::String;
                     it.stream = t.number;
                     it.port = t.port;
                     it.event = &e;
-                    items.push_back(it);
                     break;
                 }
-                }
+                it.rank = static_cast<int>(rank);
+                it.index = index++;
+                p.end = std::max(p.end, it.kind == ItemKind::NoteOn ? it.offTick : it.tick);
+                p.items.push_back(it);
             }
         }
     }
-    std::ranges::stable_sort(
-        items, [](const Item& a, const Item& b) { return std::tie(a.tick, a.kind) < std::tie(b.tick, b.kind); });
-    return items;
+    // One tick: the streams in number order, each in stored order; sysex after the short messages.
+    std::ranges::sort(p.items, [](const Item& a, const Item& b) {
+        return std::tuple(a.tick, a.kind == ItemKind::Sysex, a.rank, a.index) <
+               std::tuple(b.tick, b.kind == ItemKind::Sysex, b.rank, b.index);
+    });
+    return p;
 }
 
-/// Messages that establish the state at `start`: the streams' parameters, then (with chase) the
-/// last patch, pitch wheel, modulation wheel and sustain pedal before `start` on every port and
-/// channel (the four kinds Cakewalk's "patch/controller search-back" looks for).
-std::vector<Item> startupItems(const Sequence& sequence, const std::vector<Item>& playlist, const Tick start,
-                               const PlaybackOptions& o) {
+/// The last patch, pitch wheel, modulation, sustain and volume of each audible stream before
+/// `start`, for the streams that still have events at or after `start` ("search-back").
+template <typename Audible>
+std::vector<Item> chaseItems(const Sequence& sequence, const Playlist& playlist, const Tick start,
+                             const Audible& audible) {
     std::vector<Item> out;
-    if (o.sendStreamParameters) {
-        for (const Stream& t : sequence.streams) {
-            if (t.events.empty()) {
-                continue;
-            }
-            std::uint8_t ch = 0;
-            if (t.channel) {
-                ch = *t.channel & 0x0fU;
-            } else if (const auto first = std::ranges::find_if(t.events, &Event::isMidi); first != t.events.end()) {
-                ch = first->channel & 0x0fU;
-            }
-            if (t.patch) {
-                out.push_back(shortItem(start, ItemKind::Control, t, 0xc0 | ch, clamp7(*t.patch)));
-            }
-            if (t.volume && *t.volume >= 0) {
-                out.push_back(shortItem(start, ItemKind::Control, t, 0xb0 | ch, 7, clamp7(*t.volume)));
-            }
-            if (t.pan && *t.pan >= 0) {
-                out.push_back(shortItem(start, ItemKind::Control, t, 0xb0 | ch, 10, clamp7(*t.pan)));
-            }
+    for (const Stream* t : streamsByNumber(sequence)) {
+        if (!audible(t->number)) {
+            continue;
         }
-    }
-    if (o.chase) {
-        // key: port, status byte (with channel), controller number or 0 -> the latest item
-        std::map<std::tuple<int, std::uint8_t, std::uint8_t>, Item> latest;
-        for (const Item& it : playlist) {
+        const bool continues = std::ranges::any_of(
+            playlist.items, [&](const Item& it) { return it.stream == t->number && it.tick >= start; });
+        if (!continues) {
+            continue;
+        }
+        // patch, wheel, CC 1, CC 64, CC 7: the latest of each before `start`, per output channel
+        std::map<std::tuple<int, std::uint8_t>, std::array<std::optional<Item>, 5>> latest;
+        for (const Item& it : playlist.items) {
             if (it.tick >= start) {
                 break;
             }
-            if (it.kind != ItemKind::Control) {
+            if (it.stream != t->number || it.kind != ItemKind::Control) {
                 continue;
             }
-            const std::uint8_t status = it.data[0];
-            const std::uint8_t kind = status & 0xf0U;
-            if (kind == 0xc0 || kind == 0xe0 || (kind == 0xb0 && (it.data[1] == 1 || it.data[1] == 64))) {
-                latest[{it.port, status, kind == 0xb0 ? it.data[1] : std::uint8_t{0}}] = it;
+            const std::uint8_t kind = it.data[0] & 0xf0U;
+            int slot = -1;
+            if (kind == 0xc0) {
+                slot = 0;
+            } else if (kind == 0xe0) {
+                slot = 1;
+            } else if (kind == 0xb0 && it.data[1] == 1) {
+                slot = 2;
+            } else if (kind == 0xb0 && it.data[1] == 64) {
+                slot = 3;
+            } else if (kind == 0xb0 && it.data[1] == 7) {
+                slot = 4;
+            }
+            if (slot >= 0) {
+                latest[{it.port, static_cast<std::uint8_t>(it.data[0] & 0x0fU)}][static_cast<std::size_t>(slot)] = it;
             }
         }
-        for (auto& [key, it] : latest) {
-            Item chased = it;
-            chased.tick = start;
-            out.push_back(chased);
+        for (auto& [key, slots] : latest) {
+            for (const std::optional<Item>& it : slots) {
+                if (it) {
+                    out.push_back(*it);
+                }
+            }
         }
     }
     return out;
-}
-
-MidiMessage message3(const double time, const int port, const std::uint8_t status, const std::uint8_t d1,
-                     const std::uint8_t d2) {
-    MidiMessage m;
-    m.time = time;
-    m.port = port;
-    m.size = 3;
-    m.data = {status, d1, d2};
-    return m;
-}
-
-/// Messages that silence a channel's continuous controllers, as Cakewalk's "Zero continuous
-/// controllers" does: lift the sustain pedal, centre the pitch wheel, zero the modulation wheel, and
-/// "reset all controllers".
-void zeroControllers(std::vector<MidiMessage>& out, const double time, const int port, const std::uint8_t ch) {
-    const auto cc = static_cast<std::uint8_t>(0xb0 | ch);
-    out.push_back(message3(time, port, cc, 64, 0));
-    out.push_back(message3(time, port, static_cast<std::uint8_t>(0xe0 | ch), 0, 64));
-    out.push_back(message3(time, port, cc, 1, 0));
-    out.push_back(message3(time, port, cc, 121, 0));
 }
 
 /// Ports the sequence's streams send to.
@@ -297,6 +349,66 @@ std::pair<Tick, bool> beatAtOrAfter(const MeterMap& meters, const Tick tick) {
     return {start + k * bt, k == 0};
 }
 
+/// A pending note-off.
+struct PendingOff {
+    Tick tick = 0;
+    int port = 0;
+    std::uint8_t status = 0;
+    std::uint8_t key = 0;
+};
+
+/// The original engine's note-off queue: a binary min-heap on the time. A new entry moves up past
+/// parents with an equal or later time; after removing the top, the last entry moves down only past
+/// children with an earlier time (the left child on a tie). Entries with equal times therefore leave
+/// in the order this produces, which the captures confirm.
+class OffHeap {
+public:
+    [[nodiscard]] bool empty() const noexcept { return heap_.empty(); }
+    [[nodiscard]] const PendingOff& top() const { return heap_.front(); }
+    void clear() noexcept { heap_.clear(); }
+
+    void push(const PendingOff& off) {
+        heap_.push_back(off);
+        std::size_t i = heap_.size() - 1;
+        while (i > 0) {
+            const std::size_t parent = (i - 1) / 2;
+            if (heap_[parent].tick < heap_[i].tick) {
+                break;
+            }
+            std::swap(heap_[parent], heap_[i]);
+            i = parent;
+        }
+    }
+
+    PendingOff pop() {
+        const PendingOff out = heap_.front();
+        heap_.front() = heap_.back();
+        heap_.pop_back();
+        std::size_t i = 0;
+        for (;;) {
+            const std::size_t left = 2 * i + 1;
+            if (left >= heap_.size()) {
+                break;
+            }
+            std::size_t child = left;
+            if (left + 1 < heap_.size() && heap_[left + 1].tick < heap_[left].tick) {
+                child = left + 1;
+            }
+            if (!(heap_[child].tick < heap_[i].tick)) {
+                break;
+            }
+            std::swap(heap_[child], heap_[i]);
+            i = child;
+        }
+        return out;
+    }
+
+private:
+    std::vector<PendingOff> heap_;
+};
+
+using NoteKey = std::tuple<int, std::uint8_t, std::uint8_t>; // port, status (0x9n), key
+
 } // namespace
 
 // ---------------------------------------------------------------- transport
@@ -308,7 +420,7 @@ struct Transport::Impl {
     PlaybackOptions options;
     StringEventHandler stringHandler;
 
-    std::vector<Item> playlist;
+    Playlist playlist;
     std::set<int> muted;
     std::set<int> solo;
 
@@ -320,10 +432,15 @@ struct Transport::Impl {
     double scheduledThrough = 0; // clock time up to which items have been scheduled
     double endClock = 0;         // clock time at which playback ends by itself
     bool reachedEnd = false;
-    std::map<std::tuple<int, std::uint8_t, std::uint8_t>, int> sounding; // (port, status, key) -> notes sounding
-    Tick clickTick = 0;                                                  // next metronome beat to schedule
-    std::vector<std::pair<double, bool>> countInClicks;                  // (clock time, downbeat), ascending
-    std::multimap<double, MidiMessage> clickOffs;                        // metronome note-offs not yet sent
+    OffHeap offs;                                              // note-offs not yet due
+    std::set<NoteKey> sounding;                                // notes started and not yet ended
+    Tick clickTick = 0;                                        // next metronome beat to schedule
+    std::vector<std::pair<double, bool>> countInClicks;        // (clock time, downbeat), ascending
+    std::multimap<double, MidiMessage> clickOffs;              // metronome note-offs not yet sent
+    std::vector<std::tuple<double, NoteKey, bool>> handedOver; // note-ons (true) and -offs sent with a time
+                                                               // that may still be ahead of the clock
+    std::int64_t nextClock = 0;                                // index of the next MIDI clock (24 per quarter note)
+    double idleClock = -1;                                     // next MIDI clock while stopped (< 0: not started)
 
     Impl(const Sequence& s, Clock& c, MidiSink& k, const PlaybackOptions& o)
         : sequence(&s), clock(&c), sink(&k), options(o), playlist(buildPlaylist(s)) {
@@ -351,25 +468,30 @@ struct Transport::Impl {
         }
         return !muted.contains(stream);
     }
-    [[nodiscard]] Tick lastTick() const { return playlist.empty() ? 0 : playlist.back().tick; }
+    [[nodiscard]] Tick lastTick() const { return playlist.end; }
     [[nodiscard]] bool clickEnabled() const {
         return options.metronome && sequence->metronome.velocity > 0 && sequence->metronome.duration > 0;
     }
     [[nodiscard]] bool countInEnabled() const {
         return options.countInMeasures > 0 && sequence->metronome.velocity > 0 && sequence->metronome.duration > 0;
     }
+    [[nodiscard]] Tick clockTicks(const std::int64_t index) const {
+        return static_cast<Tick>(index * sequence->ppq / 24);
+    }
 
-    /// A metronome tick: note on at `time`, note off `durationSeconds` later.
-    void click(const double time, const double durationSeconds, const bool downbeat) {
+    /// A metronome tick: note on at `time`, note off `durationSeconds` later. A click still sounding
+    /// (its length reaches past this beat) ends first.
+    void click(const double time, const double durationSeconds) {
         const Metronome& m = sequence->metronome;
         const auto status = static_cast<std::uint8_t>(0x90 | (m.channel & 0x0f));
         const auto key = clamp7(m.key);
-        int vel = m.velocity;
-        if (options.metronomeAccent && !downbeat) {
-            vel = vel * 3 / 4;
-        }
         sendClickOffs(time);
-        sink->send(message3(time, m.port, status, key, clamp7(vel)));
+        for (auto& [due, off] : clickOffs) {
+            off.time = time;
+            sink->send(off);
+        }
+        clickOffs.clear();
+        sink->send(message3(time, m.port, status, key, clamp7(m.velocity)));
         clickOffs.emplace(time + durationSeconds, message3(time + durationSeconds, m.port, status, key, 0));
     }
 
@@ -381,31 +503,72 @@ struct Transport::Impl {
         }
     }
 
-    void clickAt(const Tick tick, const bool downbeat) {
+    /// The click's length in ticks. The metronome duration counts MIDI clocks (1/24 quarter note,
+    /// the dialog allows 1 to 24), and the original ends the click two clocks before that count; a
+    /// duration of 1 wraps round to 23 clocks.
+    [[nodiscard]] Tick clickTicks() const {
+        const int d = sequence->metronome.duration;
+        const int clocks = d >= 2 ? d - 2 : 23;
+        return static_cast<Tick>(clocks) * sequence->ppq / 24;
+    }
+
+    /// A click on the beat at `tick`. Its note-off comes after clickTicks(), but not later than
+    /// one MIDI clock before the next measure; a click still sounding at the next beat ends there.
+    void clickAt(const Tick tick) {
         const double time = tickToClock(tick);
-        click(time, tickToClock(tick + sequence->metronome.duration) - time, downbeat);
+        const Tick lastClock = sequence->meterMap.nextMeasure(tick) - sequence->ppq / 24;
+        click(time, tickToClock(std::min(tick + clickTicks(), lastClock)) - time);
+    }
+
+    void noteOn(const Item& it, const double time) {
+        const NoteKey key{it.port, it.data[0], it.data[1]};
+        if (sounding.contains(key)) {
+            // the key is sounding: end it first
+            sink->send(message3(time, it.port, it.data[0], it.data[1], 0));
+        }
+        sounding.insert(key);
+        sink->send(message(time, it.port, it.size, it.data));
+        handedOver.emplace_back(time, key, true);
+        offs.push({it.offTick, it.port, it.data[0], it.data[1]});
+    }
+
+    void noteOff(const PendingOff& off, const double time) {
+        const NoteKey key{off.port, off.status, off.key};
+        if (sounding.erase(key) > 0) {
+            sink->send(message3(time, off.port, off.status, off.key, 0));
+            handedOver.emplace_back(time, key, false);
+        }
+    }
+
+    /// The output dropped what was still ahead of `time` (discardScheduled): wind the sounding
+    /// notes back to that time, so a dropped note-on gets no note-off and a note whose note-off was
+    /// dropped gets one.
+    void rewindSounding(const double time) {
+        for (const auto& [t, key, on] : std::views::reverse(handedOver)) {
+            if (t <= time) {
+                break;
+            }
+            if (on) {
+                sounding.erase(key);
+            } else {
+                sounding.insert(key);
+            }
+        }
+        handedOver.clear();
+    }
+
+    /// Forgets the notes handed over up to `time` (they are delivered by now).
+    void pruneHandedOver(const double time) {
+        std::erase_if(handedOver, [time](const auto& entry) { return std::get<0>(entry) <= time; });
     }
 
     void emit(const Item& it, const double time) {
         switch (it.kind) {
         case ItemKind::NoteOn:
-            ++sounding[{it.port, it.data[0], it.data[1]}];
-            sink->send(toMessage(it, time));
+            noteOn(it, time);
             break;
-        case ItemKind::NoteOff: {
-            // Only for a note that was started (not for notes of a stream muted at their start).
-            const auto found = sounding.find({it.port, it.data[0], it.data[1]});
-            if (found == sounding.end()) {
-                break;
-            }
-            if (--found->second == 0) {
-                sounding.erase(found);
-            }
-            sink->send(toMessage(it, time));
-            break;
-        }
         case ItemKind::Control:
-            sink->send(toMessage(it, time));
+            sink->send(message(time, it.port, it.size, it.data));
             break;
         case ItemKind::Sysex:
             if (options.sendSysexBanks && it.bank >= 0 &&
@@ -421,25 +584,81 @@ struct Transport::Impl {
         }
     }
 
-    /// Sends note-offs for every note still sounding, at `time`.
+    /// The notes sounding (sequence notes and metronome clicks) by port, then channel, then key.
+    [[nodiscard]] std::map<int, std::array<std::set<std::uint8_t>, 16>> soundingByChannel() const {
+        std::map<int, std::array<std::set<std::uint8_t>, 16>> out;
+        for (const auto& [port, status, key] : sounding) {
+            out[port][status & 0x0fU].insert(key);
+        }
+        for (const auto& [due, m] : clickOffs) {
+            out[m.port][m.data[0] & 0x0fU].insert(m.data[1]);
+        }
+        return out;
+    }
+
+    /// Note-offs for every note still sounding, at `time` (seek and loop: no controller messages).
     void silence(const double time) {
+        for (const auto& [port, channels] : soundingByChannel()) {
+            for (std::uint8_t ch = 0; ch < 16; ++ch) {
+                for (const std::uint8_t key : channels[ch]) {
+                    sink->send(message3(time, port, static_cast<std::uint8_t>(0x90 | ch), key, 0));
+                }
+            }
+        }
+        clickOffs.clear();
+        sounding.clear();
+        offs.clear();
+        handedOver.clear();
+    }
+
+    /// What stopping sends: MIDI Stop; the metronome click's note-off; per channel the sounding notes'
+    /// offs and All Notes Off; then, when asked, the controller reset on every channel.
+    void stopOutput(const double time, const bool zeroControllers) {
+        std::set<int> ports = portsInUse(*sequence);
+        if (options.midiClock) {
+            for (const int port : ports) {
+                sink->send(message1(time, port, 0xfc));
+            }
+        }
+        // a metronome click still sounding ends before the channels are silenced
         for (auto& [due, m] : clickOffs) {
-            m.time = std::min(due, time);
+            m.time = time;
             sink->send(m);
         }
         clickOffs.clear();
-        for (const auto& [key, count] : sounding) {
-            MidiMessage m;
-            m.time = time;
-            m.port = std::get<0>(key);
-            m.size = 3;
-            m.data = {std::get<1>(key), std::get<2>(key), 0};
-            sink->send(m);
+        const auto byChannel = soundingByChannel();
+        for (const auto& [port, channels] : byChannel) {
+            ports.insert(port);
         }
+        for (const int port : ports) {
+            const auto found = byChannel.find(port);
+            for (std::uint8_t ch = 0; ch < 16; ++ch) {
+                if (found != byChannel.end()) {
+                    for (const std::uint8_t key : found->second[ch]) {
+                        sink->send(message3(time, port, static_cast<std::uint8_t>(0x90 | ch), key, 0));
+                    }
+                }
+                sink->send(message3(time, port, static_cast<std::uint8_t>(0xb0 | ch), 123, 0));
+            }
+        }
+        if (zeroControllers) {
+            for (const int port : ports) {
+                for (std::uint8_t ch = 0; ch < 16; ++ch) {
+                    const auto cc = static_cast<std::uint8_t>(0xb0 | ch);
+                    sink->send(message3(time, port, static_cast<std::uint8_t>(0xe0 | ch), 0, 64));
+                    sink->send(message3(time, port, cc, 1, 0));
+                    sink->send(message3(time, port, cc, 64, 0));
+                    sink->send(message3(time, port, cc, 121, 0));
+                }
+            }
+        }
+        clickOffs.clear();
         sounding.clear();
+        offs.clear();
+        handedOver.clear();
     }
 
-    void start(const Tick tick, const double at, const bool withCountIn) {
+    void start(const Tick tick, const double at, const bool withCountIn, const bool transportStart) {
         anchorTick = tick;
         anchorClock = at;
         countInClicks.clear();
@@ -448,8 +667,8 @@ struct Transport::Impl {
             const MeterEntry& m = sequence->meterMap.atMeasure(sequence->meterMap.measureAt(tick));
             const Tick bt = sequence->meterMap.beatTicks(m);
             const double beatSeconds = (sequenceSeconds(tick + bt) - sequenceSeconds(tick)) / options.tempoRatio;
-            const double durationSeconds = beatSeconds * static_cast<double>(sequence->metronome.duration) /
-                                           static_cast<double>(std::max<Tick>(1, bt));
+            const double durationSeconds =
+                beatSeconds * static_cast<double>(clickTicks()) / static_cast<double>(std::max<Tick>(1, bt));
             const int beats = options.countInMeasures * m.numerator;
             anchorClock = at + beats * beatSeconds;
             for (int i = 0; i < beats; ++i) {
@@ -457,26 +676,49 @@ struct Transport::Impl {
             }
             countInDuration = durationSeconds;
         }
-        next = static_cast<std::size_t>(std::ranges::lower_bound(playlist, tick, {}, &Item::tick) - playlist.begin());
+        next = static_cast<std::size_t>(std::ranges::lower_bound(playlist.items, tick, {}, &Item::tick) -
+                                        playlist.items.begin());
         clickTick = beatAtOrAfter(sequence->meterMap, tick).first;
+        nextClock = (static_cast<std::int64_t>(tick) * 24 + sequence->ppq - 1) / sequence->ppq;
         scheduledThrough = at;
         reachedEnd = false;
-        for (const Item& it : startupItems(*sequence, playlist, tick, options)) {
-            if (audible(it.stream)) {
+        if (transportStart && options.midiClock) {
+            const std::uint8_t status = tick == 0 || options.startNeverContinue ? 0xfa : 0xfb;
+            for (const int port : portsInUse(*sequence)) {
+                sink->send(message1(at, port, status));
+            }
+        }
+        if (options.sendStreamParameters) {
+            std::vector<MidiMessage> params;
+            for (const Stream* t : streamsByNumber(*sequence)) {
+                if (!t->events.empty() && audible(t->number)) {
+                    appendStreamParameters(params, *t, at);
+                }
+            }
+            for (const MidiMessage& m : params) {
+                sink->send(m);
+            }
+        }
+        if (options.chase) {
+            for (const Item& it : chaseItems(*sequence, playlist, tick, [this](int s) { return audible(s); })) {
                 emit(it, at);
             }
         }
     }
     double countInDuration = 0; // note length of a count-in click, in seconds
 
-    /// Schedules the metronome up to `horizon`, but not beyond `limit` (ticks).
+    /// Schedules the metronome up to `horizon`, but not beyond `limit` (ticks; the limit's beat plays).
     void scheduleClicks(const double horizon, const Tick limit) {
         if (!clickEnabled()) {
             return;
         }
-        while (clickTick < limit && tickToClock(clickTick) <= horizon) {
+        while (clickTick <= limit && tickToClock(clickTick) <= horizon) {
             const auto [tick, downbeat] = beatAtOrAfter(sequence->meterMap, clickTick);
-            clickAt(tick, downbeat);
+            if (tick > limit) {
+                clickTick = tick;
+                break;
+            }
+            clickAt(tick);
             clickTick = beatAtOrAfter(sequence->meterMap, tick + 1).first;
         }
     }
@@ -484,46 +726,55 @@ struct Transport::Impl {
     /// Schedules items up to `horizon` (clock time). Handles the loop range and the end.
     void schedule(const double horizon) {
         while (!countInClicks.empty() && countInClicks.front().first <= horizon) {
-            click(countInClicks.front().first, countInDuration, countInClicks.front().second);
+            click(countInClicks.front().first, countInDuration);
             countInClicks.erase(countInClicks.begin());
         }
         const bool looping = options.loopFrom && options.loopThru && *options.loopThru > *options.loopFrom;
+        const Tick limit = looping ? *options.loopThru : lastTick();
         while (!reachedEnd) {
-            // Loop: when the loop end falls before the horizon, wrap there.
-            if (looping) {
+            const Tick itemTick = next < playlist.items.size() ? playlist.items[next].tick : kNever;
+            const Tick offTick = offs.empty() ? kNever : offs.top().tick;
+            const Tick content = std::min(itemTick, offTick);
+            // Loop: when the next thing lies at or past the loop end, wrap there once that time is due.
+            if (looping && content >= *options.loopThru) {
                 const double wrapAt = tickToClock(*options.loopThru);
-                if (wrapAt <= horizon && (next >= playlist.size() || playlist[next].tick >= *options.loopThru)) {
+                if (wrapAt > horizon) {
                     scheduleClicks(horizon, *options.loopThru);
-                    silence(wrapAt);
-                    anchorTick = *options.loopFrom;
-                    anchorClock = wrapAt;
-                    next = static_cast<std::size_t>(std::ranges::lower_bound(playlist, anchorTick, {}, &Item::tick) -
-                                                    playlist.begin());
-                    clickTick = beatAtOrAfter(sequence->meterMap, anchorTick).first;
-                    continue;
+                    break;
                 }
+                scheduleClicks(horizon, *options.loopThru - 1);
+                scheduleClocks(wrapAt, *options.loopThru - 1);
+                silence(wrapAt);
+                anchorTick = *options.loopFrom;
+                anchorClock = wrapAt;
+                next = static_cast<std::size_t>(std::ranges::lower_bound(playlist.items, anchorTick, {}, &Item::tick) -
+                                                playlist.items.begin());
+                clickTick = beatAtOrAfter(sequence->meterMap, anchorTick).first;
+                nextClock = (static_cast<std::int64_t>(anchorTick) * 24 + sequence->ppq - 1) / sequence->ppq;
+                continue;
             }
-            if (next >= playlist.size()) {
-                scheduleClicks(horizon, looping ? *options.loopThru : lastTick());
+            if (content == kNever) {
+                scheduleClicks(horizon, limit);
+                scheduleClocks(horizon, limit);
                 endClock = tickToClock(lastTick());
                 reachedEnd = true;
                 break;
             }
-            const Item& it = playlist[next];
-            if (looping && it.tick >= *options.loopThru) {
-                // past the loop end but the wrap time is not within the horizon yet
-                scheduleClicks(horizon, *options.loopThru);
-                break;
-            }
-            const double time = tickToClock(it.tick);
+            const double time = tickToClock(content);
             if (time > horizon) {
-                scheduleClicks(horizon, looping ? *options.loopThru : lastTick());
+                scheduleClicks(horizon, limit);
+                scheduleClocks(horizon, limit);
                 break;
             }
-            scheduleClicks(time, std::min(it.tick + 1, lastTick())); // clicks up to this item keep time order
+            scheduleClocks(time, content); // the clock of a tick comes first
+            scheduleClicks(time, content); // clicks up to this tick keep time order
             sendClickOffs(time);
-            // Note-offs go through emit() regardless of mute: it sends them only for sounding notes.
-            if (it.kind == ItemKind::NoteOff || audible(it.stream)) {
+            if (offTick <= itemTick) {
+                noteOff(offs.pop(), time); // due note-offs before the tick's events
+                continue;
+            }
+            const Item& it = playlist.items[next];
+            if (audible(it.stream)) {
                 emit(it, time);
             }
             ++next;
@@ -532,19 +783,36 @@ struct Transport::Impl {
         scheduledThrough = horizon;
     }
 
-    /// Controller reset on every channel of every port in use.
-    void zeroAll(const double time, const bool allNotesOff) const {
-        std::vector<MidiMessage> out;
-        for (const int port : portsInUse(*sequence)) {
-            for (std::uint8_t ch = 0; ch < 16; ++ch) {
-                if (allNotesOff) {
-                    out.push_back(message3(time, port, static_cast<std::uint8_t>(0xb0 | ch), 123, 0));
-                }
-                zeroControllers(out, time, port, ch);
-            }
+    /// MIDI clocks up to `horizon`, but not beyond tick `limit`.
+    void scheduleClocks(const double horizon, const Tick limit) {
+        if (!options.midiClock) {
+            return;
         }
-        for (const MidiMessage& m : out) {
-            sink->send(m);
+        while (clockTicks(nextClock) <= limit && tickToClock(clockTicks(nextClock)) <= horizon) {
+            const double time = tickToClock(clockTicks(nextClock));
+            for (const int port : portsInUse(*sequence)) {
+                sink->send(message1(time, port, 0xf8));
+            }
+            ++nextClock;
+        }
+    }
+
+    /// MIDI clocks while stopped, at the tempo at the stop position.
+    void idleClocks(const double horizon) {
+        const double beat =
+            (sequenceSeconds(position + sequence->ppq) - sequenceSeconds(position)) / options.tempoRatio;
+        const double interval = beat / 24;
+        if (interval <= 0) {
+            return;
+        }
+        if (idleClock < 0) {
+            idleClock = clock->now();
+        }
+        while (idleClock <= horizon) {
+            for (const int port : portsInUse(*sequence)) {
+                sink->send(message1(idleClock, port, 0xf8));
+            }
+            idleClock += interval;
         }
     }
 };
@@ -582,7 +850,7 @@ void Transport::play() {
         return;
     }
     impl_->playing = true;
-    impl_->start(impl_->position, impl_->clock->now(), true);
+    impl_->start(impl_->position, impl_->clock->now(), true, true);
     pump();
 }
 
@@ -598,16 +866,25 @@ void Transport::stop() {
     impl_->playing = false;
     impl_->countInClicks.clear();
     impl_->sink->discardScheduled(); // pending future note-ons would outlive the note-offs below
-    impl_->silence(t);
-    if (impl_->options.zeroControllersOnStop) {
-        impl_->zeroAll(t, false);
-    }
+    impl_->rewindSounding(t);
+    impl_->stopOutput(t, impl_->options.zeroControllersOnStop);
+    impl_->idleClock = -1;
     impl_->sink->flush();
 }
 
 void Transport::panic() {
-    stop();
-    impl_->zeroAll(impl_->clock->now(), true);
+    if (impl_->playing) {
+        const double t = impl_->clock->now();
+        impl_->position = std::min(impl_->clockToTick(t), impl_->lastTick());
+        impl_->playing = false;
+        impl_->countInClicks.clear();
+        impl_->sink->discardScheduled();
+        impl_->rewindSounding(t);
+        impl_->stopOutput(t, true);
+    } else {
+        impl_->stopOutput(impl_->clock->now(), true);
+    }
+    impl_->idleClock = -1;
     impl_->sink->flush();
 }
 
@@ -623,8 +900,9 @@ void Transport::seek(const Tick tick) {
     }
     const double t = impl_->clock->now();
     impl_->sink->discardScheduled();
+    impl_->rewindSounding(t);
     impl_->silence(t);
-    impl_->start(std::max<Tick>(0, tick), t, false);
+    impl_->start(std::max<Tick>(0, tick), t, false, false);
     pump();
 }
 
@@ -676,21 +954,40 @@ bool Transport::isAudible(const int streamNumber) const {
 }
 
 bool Transport::pump() {
+    const double now = impl_->clock->now();
     if (!impl_->playing) {
+        if (impl_->options.midiClock && impl_->options.clockWhileStopped) {
+            impl_->idleClocks(now + impl_->options.lookAhead);
+            impl_->sink->flush();
+        }
         return false;
     }
-    const double now = impl_->clock->now();
+    impl_->pruneHandedOver(now);
     impl_->schedule(now + impl_->options.lookAhead);
-    impl_->sink->flush();
     if (impl_->options.stopAtEnd && impl_->reachedEnd && now >= impl_->endClock) {
+        // The end: the same output as a stop, at the end time.
         impl_->playing = false;
         impl_->position = impl_->lastTick();
+        impl_->stopOutput(impl_->endClock, impl_->options.zeroControllersOnStop);
+        impl_->idleClock = -1;
+        impl_->sink->flush();
         return false;
     }
+    impl_->sink->flush();
     return true;
 }
 
-// ---------------------------------------------------------------- render
+// ---------------------------------------------------------------- open, render
+
+std::vector<MidiMessage> openMessages(const Sequence& sequence) {
+    std::vector<MidiMessage> out;
+    for (const Stream* t : streamsByNumber(sequence)) {
+        if (!t->events.empty()) {
+            appendStreamParameters(out, *t, 0);
+        }
+    }
+    return out;
+}
 
 namespace {
 
@@ -726,9 +1023,9 @@ std::vector<MidiMessage> render(const Sequence& sequence, const PlaybackOptions&
     clock.time = endTime;
     t.pump();
     if (t.playing()) {
+        std::erase_if(sink.messages, [&](const MidiMessage& m) { return m.time > endTime + 1e-9; });
         t.stop();
     }
-    std::erase_if(sink.messages, [&](const MidiMessage& m) { return m.time > endTime + 1e-9; });
     return sink.messages;
 }
 

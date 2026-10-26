@@ -219,7 +219,7 @@ Undo (v0.7): `Undo` keeps the sequence as it was before the last command and swa
 Quantize"). One level, as in Cakewalk. The C API does the same with `sseq_sequence_copy` and
 `sseq_sequence_swap`.
 
-## 5. Engine (v0.2)
+## 5. Engine (v0.2, matched to captured output in v0.8)
 
 `include/sseq/engine.hpp`, namespace `sseq::engine`. Platform-neutral: the application supplies
 the two things that differ between platforms and the engine does everything else.
@@ -234,36 +234,54 @@ the two things that differ between platforms and the engine does everything else
   loop range (auto-shuttle), and a string-event handler for Text/MCI/Wave events. The caller
   calls `pump()` every 10–20 ms; each pump schedules everything up to `clock.now() + lookAhead`
   so the caller's timer jitter does not reach the MIDI port.
-- Playlist: on construction the streams are flattened into one list of outputs sorted by tick
-  (note-off < controller/patch/wheel < note-on < sysex < string at equal ticks). Key+, Vel+,
-  Time+, forced channel, port and stream loop repetitions (`reps`, period = whole measures) are
-  applied here, as Cakewalk applies them at output time rather than in the data.
+- Playlist: on construction the streams are flattened into one list of outputs sorted by tick;
+  at one tick the streams come in stream-number order and each stream's events in stored order,
+  with sysex after the short messages. Key+ (folded by octaves into 0..127), Vel+ (clamped to
+  1..127), Time+ (an event moved before the start plays at tick 0), forced channel, port and stream
+  loop repetitions (`reps`, period = whole measures) are applied here, as Cakewalk applies them at
+  output time rather than in the data.
+- Note-offs (v0.8): a note-on puts its note-off into a binary min-heap on time that reproduces the
+  original engine's queue, including the order of equal times; due note-offs go before the
+  events of their tick. A note-on for a sounding key sends a note-off first; a note-off for a key
+  that is no longer sounding is dropped.
 - Tick ↔ clock: `tempoMap.tickToSeconds` / `secondsToTick` scaled by the tempo ratio, anchored
   at the last play/seek/ratio change, so tempo changes inside the sequence are exact and ratio
   changes take effect immediately.
-- Start: stream parameters (patch, volume, pan) for every stream with events, then a "chase" of
-  the latest patch/controller/wheel before the position per (port, channel, controller), as
-  Cakewalk's patch/controller search-back does. Both are options.
-- Stop and seek: notes still sounding are turned off (a count per (port, channel, key) keeps
-  overlapping notes correct and never emits an off for a note that was never turned on);
-  optionally mod wheel, sustain, channel pressure and pitch wheel are zeroed (the VARS flag).
-  `PlaybackOptions::fromSequence` takes chase and zero-controllers from the sequence's settings.
+- Start: stream parameters (patch, volume, pan) for every audible stream with events, in
+  stream-number order; then, with `chase` (Cakewalk's search-back), for every audible stream that
+  still has events at or after the position, its last patch, pitch wheel, CC 1, CC 64 and CC 7
+  before it. `openMessages()` is what loading a file sends: the stream parameters of all streams.
+- Stop and the end of the sequence: MIDI Stop, the metronome click's note-off, then per channel
+  the sounding notes' offs in key order and All Notes Off; with `zeroControllersOnStop` then per
+  channel pitch wheel centre, CC 1 = 0, CC 64 = 0, CC 121 (`panic()` always adds that reset). Seek
+  and the loop wrap only end the sounding notes. Messages handed to the sink ahead of the clock
+  and dropped by `discardScheduled()` are taken into account, so a dropped note-on gets no
+  note-off and a note whose note-off was dropped gets one.
+- MIDI sync out (v0.8, `midiClock`): Start (Continue when not at tick 0, unless
+  `startNeverContinue`), Clock every 1/24 quarter note before the events of its tick, Stop; with
+  `clockWhileStopped`, `pump()` keeps sending Clock at the tempo while stopped. No Song Position
+  Pointer, as in the original.
+- All of the above was checked against captures of Cakewalk Apprentice 1.04's MIDI output
+  (`tests/data/engine/README.md`): same messages, same order, times within 25 ms.
 - `render(sequence, options, from, thru)`: the same scheduling offline, returning the messages with
   times in seconds from `from`; this is what the tests check and what an export-to-audio or
   SMF-0 writer would consume.
 - Metronome (v0.3): with `metronome` on, the sequence's metronome note (port, channel, key,
   velocity, duration from the METRONOME chunk) plays on every beat of the meter map while
-  playing, interleaved in time order with the sequence's messages; a velocity or duration of 0
-  disables it, as Cakewalk's help says. With `metronomeAccent`, beats other than the first of
-  a measure play at 3/4 of the velocity (the amount is not documented; Cakewalk cannot be
-  observed here because Wine has no MIDI device). `countInMeasures` plays whole measures of
+  playing, the end beat included, interleaved in time order with the sequence's messages; a
+  velocity or duration of 0 disables it, as Cakewalk's help says. The MIDI click has the same
+  velocity on every beat (`metronomeAccent` does not change it; Cakewalk's accent only shows on
+  its PC-speaker click). The duration counts MIDI clocks (1/24 quarter note): the click ends two
+  clocks before that count (duration 1 wraps round to 23 clocks), never later than one clock
+  before the next measure, and a click still sounding at the next beat ends right before it. `countInMeasures` plays whole measures of
   clicks before the start position, in the meter and tempo at that position; `now()` stays at
   the start and `countingIn()` is true until the sequence begins. `PlaybackOptions::fromSequence(sequence,
-  recording)` takes the playback or the recording metronome flag, the accent flag, and for
-  recording the count-in and `stopAtEnd = false` (recording runs past the end of the material).
+  recording)` takes the playback or the recording metronome flag, the accent flag, the sync flags,
+  and for recording the count-in and `stopAtEnd = false` (recording runs past the end of the
+  material).
 - Loop count 9999 means "keep looping as long as the non-looping streams play" (help: Track/Loop):
   the stream repeats until the end of the longest stream with loop count 1 and is cut there.
-- `panic()`: stop, then all-notes-off and the controller reset on every channel of every port
+- `panic()`: stop, with All Notes Off and the controller reset on every channel of every port
   (the control bar's panic button).
 - `Recorder(transport, options)` (`recorder.hpp`): the platform layer hands it timestamped input
   messages; it converts their times to ticks through `Transport::tickAt()` (so input during the
@@ -274,8 +292,7 @@ the two things that differ between platforms and the engine does everything else
   itself has no punch-in or multi-take (help: those are Cakewalk Professional features), so the
   punch range is a library extension.
 - Not in the engine: MIDI thru (low-latency routing of input to output belongs to the platform
-  layer; the settings are in the model), MIDI sync output, step record (a dialog on top of the
-  model).
+  layer; the settings are in the model), step record (a dialog on top of the model).
 
 ## 5a. C API and Swift package (v0.3)
 

@@ -20,7 +20,8 @@
 
 namespace sseq::engine {
 
-/// A short MIDI message (1 to 3 bytes) to deliver at an absolute clock time.
+/// A short MIDI message (1 to 3 bytes, 1 for the real-time sync messages) to deliver at an absolute
+/// clock time.
 struct MidiMessage {
     double time = 0; // seconds on the Clock's timeline
     int port = 0;    // 0-based output port, as in the sequence
@@ -78,24 +79,46 @@ private:
     double origin_ = 0;
 };
 
+/// What the transport sends, as observed on the MIDI output of the original engine:
+///  - Start: the patch, volume and pan of every audible stream with events, in stream-number order;
+///    then, with `chase`, for every audible stream that still has events at or after the start
+///    position, the last patch, pitch wheel, modulation (CC 1), sustain (CC 64) and volume (CC 7)
+///    before it, in that order.
+///  - Events at one tick: due note-offs first, then the streams' events in stream-number order and,
+///    within a stream, in stored order; sysex after the short messages of the tick.
+///  - Note-offs wait in a binary min-heap keyed by time; equal times leave the heap in the heap's own
+///    order (which is not the order the notes started in). A note-on for a key that is sounding on
+///    the same port and channel first sends a note-off; a note-off for a key that is not sounding is
+///    dropped, so the first note-off due for a key ends it, whichever note it belonged to.
+///  - Stop (and the end of the sequence): MIDI Stop when sync is on; then for each channel 0..15 the
+///    note-offs of its sounding notes in key order followed by All Notes Off (CC 123); then, with
+///    `zeroControllersOnStop`, for each channel: pitch wheel centre, CC 1 = 0, CC 64 = 0, CC 121.
+///  - Key+ outside 0..127 folds the key by octaves into range; Vel+ clamps to 1..127; Time+ that
+///    moves an event before the start plays it at tick 0.
+///  - Metronome: the click's duration counts MIDI clocks (1/24 quarter note); it ends two clocks
+///    before that count (1 wraps round to 23), at the latest one clock before the next measure.
 struct PlaybackOptions {
     double lookAhead = 0.1;           // seconds scheduled ahead of the clock by each pump()
     double tempoRatio = 1.0;          // playback speed (Cakewalk's 0.50 / 1.00 / 2.00 buttons)
     bool sendStreamParameters = true; // patch, volume, pan of each stream at start
-    bool chase = true; // on start, send the last patch, pitch wheel, modulation and sustain before the position
-                       // on every channel used ("patch/controller search-back")
-    bool zeroControllersOnStop = false; // on stop, lift sustain, zero modulation, centre the pitch wheel and send
+    bool chase = true; // on start, send the last patch, pitch wheel, modulation, sustain and volume before the
+                       // position ("patch/wheel/controller search-back")
+    bool zeroControllersOnStop = false; // on stop, centre the pitch wheel, zero modulation, lift sustain and send
                                         // "reset all controllers" on every channel of every port in use
     bool sendSysexBanks = true;         // play sysex events (the bank's bytes)
     std::optional<Tick> loopFrom;       // auto-shuttle: when the position reaches loopThru, continue at loopFrom
-    std::optional<Tick> loopThru;
-    bool metronome = false;       // play the sequence's metronome note on every beat
-    bool metronomeAccent = false; // first beat of each measure at full velocity, other beats softer
-    int countInMeasures = 0;      // measures of metronome before the start position (recording)
-    bool stopAtEnd = true;        // stop when the last event has played; false while recording
+    std::optional<Tick> loopThru;       // (a libsseq extension: Apprentice has no auto-shuttle)
+    bool metronome = false;             // play the sequence's metronome note on every beat
+    bool metronomeAccent = false;       // kept for the file's flag; the MIDI click does not change with it (Cakewalk's
+                                        // accent shows on its PC-speaker click only)
+    int countInMeasures = 0;            // measures of metronome before the start position (recording)
+    bool stopAtEnd = true;              // stop when the last event has played; false while recording
+    bool midiClock = false;             // MIDI sync out: Start or Continue on play, Clock 24 per quarter note, Stop
+    bool startNeverContinue = false;    // always Start, also when playback does not begin at tick 0
+    bool clockWhileStopped = true;      // with midiClock: keep sending Clock at the tempo while stopped (pump())
 
     /// Options taken from the sequence's own settings (VARS): chase and zero-controllers flags, metronome
-    /// during playback or recording (with count-in and accent); recording runs past the end.
+    /// during playback or recording (with count-in and accent), MIDI sync; recording runs past the end.
     [[nodiscard]] static PlaybackOptions fromSequence(const Sequence& sequence, bool recording = false);
 };
 
@@ -135,7 +158,8 @@ public:
     [[nodiscard]] bool isAudible(int streamNumber) const;
 
     /// Schedules everything up to clock.now() + lookAhead. Call every few milliseconds while
-    /// playing (a 10-20 ms timer is fine). Returns false once playback has stopped by itself.
+    /// playing (a 10-20 ms timer is fine). Returns false once playback has stopped by itself. While
+    /// stopped it returns false and only sends the MIDI clock (midiClock and clockWhileStopped).
     bool pump();
 
 private:
@@ -143,8 +167,13 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+/// What loading the sequence sends: the patch, volume and pan of every stream with events, in
+/// stream-number order, muted streams included (time 0).
+[[nodiscard]] std::vector<MidiMessage> openMessages(const Sequence& sequence);
+
 /// Offline rendering: every message of the sequence between `from` and `thru` (default: the end),
-/// with times in seconds from `from`, as the Transport would produce them without a clock.
+/// with times in seconds from `from`, as the Transport would produce them without a clock. The
+/// output ends with what the transport sends when it stops at the end (or at `thru`).
 [[nodiscard]] std::vector<MidiMessage> render(const Sequence& sequence, const PlaybackOptions& options = {},
                                               Tick from = 0, std::optional<Tick> thru = std::nullopt);
 

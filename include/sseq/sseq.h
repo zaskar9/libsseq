@@ -30,7 +30,7 @@ typedef struct sseq_sequence sseq_sequence;
 typedef struct sseq_transport sseq_transport;
 typedef struct sseq_recorder sseq_recorder;
 
-const char* sseq_version(void); /* "0.7.0" */
+const char* sseq_version(void); /* "0.8.0" */
 /* The message of the last failure on this thread ("" when there was none). */
 const char* sseq_last_error(void);
 
@@ -447,7 +447,7 @@ size_t sseq_sequence_set_sysex_bank(sseq_sequence* sequence, size_t index, const
 
 /* ---------------------------------------------------------------- playback */
 
-/* A short MIDI message (1 to 3 bytes) at an absolute time on the application's clock. */
+/* A short MIDI message (1 to 3 bytes; 1 for MIDI sync) at an absolute time on the application's clock. */
 typedef struct {
     double time;
     int port; /* 0-based output port as in the sequence */
@@ -468,7 +468,10 @@ typedef struct {
     int metronome;
     int metronome_accent;
     int count_in_measures;
-    int stop_at_end; /* 0 while recording */
+    int stop_at_end;          /* 0 while recording */
+    int midi_clock;           /* MIDI sync out: Start/Continue, Clock (24 per quarter note), Stop (0) */
+    int start_never_continue; /* always Start, never Continue (0) */
+    int clock_while_stopped;  /* with midi_clock: Clock also while stopped, from pump (1) */
 } sseq_playback_options;
 void sseq_playback_options_default(sseq_playback_options* out);
 /* Options from the sequence's own settings; `recording` != 0 picks the recording metronome, count-in
@@ -522,6 +525,10 @@ int sseq_transport_audible(const sseq_transport* transport, int stream_number);
 /* Schedules everything up to now + look_ahead. Call every 10-20 ms while playing. Returns 0 once
  * playback has stopped by itself. */
 int sseq_transport_pump(sseq_transport* transport);
+
+/* What loading the sequence sends: patch, volume and pan of every stream with events, in stream-number
+ * order, muted streams included. Release the result with sseq_render_free. */
+int sseq_open_messages(const sseq_sequence* sequence, sseq_midi_message** out, size_t* count);
 
 /* Offline rendering of [from, thru) (thru < 0: the end) with times in seconds from `from`.
  * Release the result with sseq_render_free. `options` may be NULL. */

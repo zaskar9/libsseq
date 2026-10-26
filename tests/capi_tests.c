@@ -234,7 +234,8 @@ static void test_transport_and_recorder(void) {
     sseq_stream_insert_event(s, t, &e);
     sseq_stream_insert_string_event(s, t, 60, SSEQ_EVENT_TEXT, (const uint8_t*)"hello", 5);
 
-    /* Offline render: 2 notes = 4 messages, at 240 ticks per second. */
+    /* Offline render: 2 notes = 4 messages, at 240 ticks per second, then the stop at the end
+     * (All Notes Off on 16 channels). */
     sseq_playback_options o;
     sseq_playback_options_default(&o);
     CHECK(o.look_ahead > 0 && o.tempo_ratio == 1.0 && o.chase && o.stop_at_end);
@@ -242,12 +243,37 @@ static void test_transport_and_recorder(void) {
     sseq_midi_message* out = NULL;
     size_t count = 0;
     CHECK(sseq_render(s, &o, 0, -1, &out, &count));
-    CHECK(count == 4);
+    CHECK(count == 4 + 16);
+    CHECK(out[4].size == 3 && out[4].data[0] == 0xb0 && out[4].data[1] == 123);
     CHECK(out[0].size == 3 && out[0].data[0] == 0x92 && out[0].data[1] == 60 && out[0].data[2] == 100);
     CHECK(fabs(out[3].time - 1.0) < 1e-9);
     sseq_render_free(out);
     sseq_playback_options_from_sequence(s, 1, &o);
     CHECK(!o.stop_at_end);
+    CHECK(!o.midi_clock && o.clock_while_stopped);
+
+    /* MIDI sync out: Start, then a clock every 5 ticks (24 per quarter note at 120 ppq). */
+    sseq_playback_options_default(&o);
+    o.send_stream_parameters = 0;
+    o.midi_clock = 1;
+    CHECK(sseq_render(s, &o, 0, -1, &out, &count));
+    CHECK(out[0].size == 1 && out[0].data[0] == 0xfa);
+    CHECK(out[1].size == 1 && out[1].data[0] == 0xf8);
+    CHECK(out[2].data[0] == 0x92); /* the clock of a tick comes before its events */
+    sseq_render_free(out);
+    CHECK(sseq_render(s, &o, 120, -1, &out, &count));
+    CHECK(out[0].data[0] == 0xfb); /* away from the start: Continue */
+    sseq_render_free(out);
+
+    /* What loading sends: the streams' patch, volume and pan. */
+    sseq_stream_get_params(s, t, &p);
+    p.patch = 5;
+    sseq_stream_set_params(s, t, &p);
+    CHECK(sseq_open_messages(s, &out, &count));
+    CHECK(count == 1 && out[0].size == 2 && out[0].data[0] == 0xc2 && out[0].data[1] == 5);
+    sseq_render_free(out);
+    p.patch = -1;
+    sseq_stream_set_params(s, t, &p);
 
     /* Transport with callbacks. */
     Fake fake;
@@ -282,7 +308,7 @@ static void test_transport_and_recorder(void) {
     fake.time = 2.5;
     CHECK(!sseq_transport_pump(tr)); /* ended */
     CHECK(!sseq_transport_playing(tr));
-    CHECK(fake.count == 4);
+    CHECK(fake.count == 4 + 16);
     sseq_transport_rewind(tr);
     CHECK(sseq_transport_now(tr) == 0);
     CHECK(fake.discards == 0); /* the transport ended by itself: nothing pending to discard */
@@ -434,7 +460,7 @@ static void test_quantize(void) {
 
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
-    CHECK(strcmp(sseq_version(), "0.7.0") == 0);
+    CHECK(strcmp(sseq_version(), "0.8.0") == 0);
     CHECK(strcmp(sseq_last_error(), "") == 0);
     test_sequence_and_files(dir);
     {

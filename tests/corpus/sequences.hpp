@@ -22,6 +22,9 @@ struct CorpusSequence {
 /// All corpus sequences, in a fixed order.
 [[nodiscard]] std::vector<CorpusSequence> allSequences();
 
+/// The engine test sequences (tests/data/engine), in a fixed order.
+[[nodiscard]] std::vector<CorpusSequence> engineSequences();
+
 /// Adds a melody written in a small text notation to `stream`, starting at `start`, and returns
 /// the tick after the last note. Tokens are separated by spaces:
 ///   pitch: letter A..G, optional # or b, octave digit (Cakewalk numbering: C5 = 60)
