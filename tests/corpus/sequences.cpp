@@ -628,12 +628,46 @@ CorpusSequence furElise() {
     return c;
 }
 
+CorpusSequence quant() {
+    CorpusSequence c{"QUANT",
+                     "Edit/Quantize test bed: every start offset in a half note, durations 1..75 and around "
+                     "multiples of a sixteenth, one event of every MIDI kind off the grid",
+                     {}};
+    Sequence& s = c.sequence;
+    Stream& off = newStream(s, 0, "Offsets", 0, 0);
+    off.patch.reset();
+    for (int n = 0; n < 60; ++n) {
+        off.events.push_back(Event::note(Tick{n} * 240 + n, 0, 36 + n, 100, 30));
+    }
+    Stream& dur = newStream(s, 1, "Durations", 1, 0);
+    dur.patch.reset();
+    for (int n = 0; n < 75; ++n) {
+        dur.events.push_back(Event::note(Tick{n} * 120, 1, 36 + n, 100, n + 1));
+    }
+    Stream& lng = newStream(s, 2, "Long", 2, 0);
+    lng.patch.reset();
+    const std::vector<int> lengths{89,  90,  91,  104, 105, 106, 119, 120, 121, 134,
+                                   135, 136, 150, 179, 180, 181, 240, 241, 255, 256};
+    for (std::size_t n = 0; n < lengths.size(); ++n) {
+        lng.events.push_back(Event::note(static_cast<Tick>(n) * 480, 2, 36 + static_cast<int>(n), 100, lengths[n]));
+    }
+    Stream& oth = newStream(s, 3, "Other kinds", 3, 0);
+    oth.patch.reset();
+    oth.events.push_back(Event::patch(7, 3, 5));
+    oth.events.push_back(Event::controller(17, 3, 7, 100));
+    oth.events.push_back(Event::note(37, 3, 60, 100, 47));
+    oth.events.push_back(Event::keyAftertouch(53, 3, 60, 80));
+    oth.events.push_back(Event::channelAftertouch(67, 3, 90));
+    oth.events.push_back(Event::pitchWheel(83, 3, 1000));
+    return c;
+}
+
 } // namespace
 
 std::vector<CorpusSequence> allSequences() {
     return {synMinimal(),  synKinds(),     synParams(),    synMaps(),      synOverlap(), synDense(),
             synStrings(),  synWave(),      rowBoat(),      frereJacques(), odeToJoy(),   jingleBells(),
-            silentNight(), greensleeves(), amazingGrace(), twinkle(),      furElise()};
+            silentNight(), greensleeves(), amazingGrace(), twinkle(),      furElise(),   quant()};
 }
 
 } // namespace sseq::corpus

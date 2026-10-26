@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(libsseq VERSION 0.4.1 LANGUAGES C CXX)
+project(libsseq VERSION 0.5.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,6 +16,7 @@ add_library(sseq
     src/recorder.cpp
     src/capi.cpp
     src/display.cpp
+    src/edit.cpp
 )
 target_include_directories(sseq PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -64,6 +65,12 @@ if(SSEQ_BUILD_TESTS)
     target_link_libraries(sseq_corpus_tests PRIVATE sseq_corpus)
     target_compile_options(sseq_corpus_tests PRIVATE ${SSEQ_WARNINGS})
     add_test(NAME corpus COMMAND sseq_corpus_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+
+    # Edit menu commands against Cakewalk's results (tests/data/edit).
+    add_executable(sseq_edit_tests tests/edit_tests.cpp)
+    target_link_libraries(sseq_edit_tests PRIVATE sseq_corpus)
+    target_compile_options(sseq_edit_tests PRIVATE ${SSEQ_WARNINGS})
+    add_test(NAME edit COMMAND sseq_edit_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 endif()
 
 install(TARGETS sseq EXPORT sseqTargets)

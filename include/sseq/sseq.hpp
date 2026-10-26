@@ -2,6 +2,7 @@
 #pragma once
 
 #include "display.hpp"
+#include "edit.hpp"
 #include "engine.hpp"
 #include "event.hpp"
 #include "maps.hpp"

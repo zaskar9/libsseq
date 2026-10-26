@@ -12,6 +12,7 @@ own sample files or from any other third party.
 | `app/NAME.WRK` | Cakewalk Apprentice 1.04, File > Save As (Cakewalk) after loading `src/NAME.WRK` | oracle for the `.WRK` format |
 | `app/NAME.MID` | Cakewalk Apprentice 1.04, File > Save As (MIDI File) of the same sequence | oracle for the SMF export mapping |
 | `mid2wrk/NAME.WRK` | Cakewalk Apprentice 1.04, loading `app/NAME.MID` and saving as Cakewalk | oracle for the SMF import mapping |
+| `edit/NAME_X.WRK` | Cakewalk Apprentice 1.04, loading `src/NAME.WRK`, Mark > Select All, an Edit menu command, File > Save As | oracle for `sseq::edit` (`tests/edit_tests.cpp`) |
 
 The Cakewalk files were produced by running the original program under Wine 9.0 (Linux
 x86_64, Win16 subsystem) with the UI driven by xdotool. File names keep the 8.3 form Windows 3.1 needs.
@@ -45,6 +46,14 @@ memory, so they are not authoritative editions).
 | `AMAZING.WRK` | Amazing Grace (tune New Britain, 1829) in F major, 3/4, with a pickup |
 | `TWINKLE.WRK` | Twinkle, Twinkle, Little Star (French traditional, 18th c.) with block chords and varied velocities |
 | `FURELISE.WRK` | Fuer Elise, opening (Beethoven, WoO 59, 1810) in 3/8 for two hands |
+| `QUANT.WRK` | Edit/Quantize test bed: every start offset in a half note, durations 1..75 and around multiples of a sixteenth, one event of every MIDI kind off the grid |
+
+## Edit oracles
+
+Each file in `edit/` is `src/QUANT.WRK` after one Edit > Quantize with all four tracks selected
+(`tests/edit_tests.cpp` lists the settings): `QUANT_16` sixteenth, `QUANT_32` thirty-second,
+`QUANT_8T` eighth triplet, `QUANT_ST` starting times only, `QUANT_DU` durations only, `QUANT_50`
+strength 50 %, `QUANT_RG` From 2:01:000 Thru 3:01:000 only.
 
 ## Limits of Cakewalk Apprentice 1.04 found while building the corpus
 

@@ -219,7 +219,7 @@ int toData(const std::vector<std::uint8_t>& bytes, sseq_data* out) {
 extern "C" {
 
 const char* sseq_version(void) {
-    return "0.4.1";
+    return "0.5.0";
 }
 
 const char* sseq_last_error(void) {
@@ -910,6 +910,74 @@ void sseq_event_values_text(const sseq_event* event, const uint8_t* payload, con
         e.payload.assign(payload, payload + payload_size);
     }
     copyString(sseq::display::valuesText(e, ppq), buffer, size);
+}
+
+// ---------------------------------------------------------------- editing
+
+namespace {
+
+/// Turns the C selection (stream indices) into the library's (stream numbers).
+bool toSelection(const sseq_sequence* s, const sseq_selection* selection, sseq::edit::Selection& out) {
+    if (s == nullptr || selection == nullptr) {
+        setError("null argument");
+        return false;
+    }
+    out.from = selection->from;
+    out.thru = selection->thru;
+    out.streams.clear();
+    if (selection->streams == nullptr) {
+        for (const sseq::Stream& t : s->sequence.streams) {
+            out.streams.push_back(t.number);
+        }
+        return true;
+    }
+    for (std::size_t i = 0; i < selection->stream_count; ++i) {
+        const sseq::Stream* t = streamAt(s, selection->streams[i]);
+        if (t == nullptr) {
+            return false;
+        }
+        out.streams.push_back(t->number);
+    }
+    return true;
+}
+
+/// Applies the C kind mask to `filter`; 0 keeps the command's default.
+void applyKinds(const uint32_t kinds, sseq::edit::EventFilter& filter) {
+    if (kinds == 0) {
+        return;
+    }
+    for (std::size_t k = 0; k < filter.kinds.size(); ++k) {
+        filter.kinds[k] = (kinds & (1U << k)) != 0;
+    }
+}
+
+} // namespace
+
+sseq_tick sseq_resolution_ticks(const sseq_resolution resolution, const int ppq) {
+    return sseq::edit::resolutionTicks(static_cast<sseq::edit::Resolution>(resolution), ppq);
+}
+
+sseq_tick sseq_quantize_time(const sseq_tick time, const sseq_tick resolution, const int strength) {
+    return sseq::edit::quantizeTime(time, resolution, strength);
+}
+
+sseq_tick sseq_quantize_duration(const sseq_tick duration, const sseq_tick resolution) {
+    return sseq::edit::quantizeDuration(duration, resolution);
+}
+
+int sseq_quantize(sseq_sequence* sequence, const sseq_selection* selection, const sseq_quantize_options* options) {
+    sseq::edit::Selection sel;
+    if (options == nullptr || !toSelection(sequence, selection, sel)) {
+        setError("null argument");
+        return -1;
+    }
+    sseq::edit::QuantizeOptions o;
+    o.resolution = options->resolution;
+    o.startTimes = options->start_times != 0;
+    o.durations = options->durations != 0;
+    o.strength = options->strength;
+    applyKinds(options->kinds, o.filter);
+    return sseq::edit::quantize(sequence->sequence, sel, o);
 }
 
 // ---------------------------------------------------------------- sysex banks

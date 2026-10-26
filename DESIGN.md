@@ -69,7 +69,7 @@ the application (WCWLITE.EXE). They are kept in their own namespaces so the boun
 | libsseq | In the original | Why it is here |
 |---|---|---|
 | `sseq::display` (`display.hpp`): key names, duration text, event kind names, General MIDI names, Event-list columns | the Event list and Track/Measure views, the string table, PATCHES.INI | pure functions of the model, pinned down by Event-list screenshots; the same text is needed by every view and platform |
-| `sseq::edit` (planned): Quantize, Length, Transpose, Slide, Controller fill, Interpolate, cut/copy/paste with the event filter | the Edit menu (`edit1.c`, `cv.c`, `evtfilt.c`); the engine offers only `SeqInsertRange`, `SeqDeleteRange`, `SeqDisplaceEarlier/Later`, `SeqTemporalSort`, `SeqRescaleTime` | pure data transformations whose exact arithmetic is established with Cakewalk Apprentice 1.04 oracles under Wine and tested here on Linux; reusable from any client |
+| `sseq::edit` (`edit.hpp`, v0.5): Quantize; planned: Length, Transpose, Slide, Controller fill, Interpolate, cut/copy/paste with the event filter | the Edit menu (`edit1.c`, `cv.c`, `evtfilt.c`); the engine offers only `SeqInsertRange`, `SeqDeleteRange`, `SeqDisplaceEarlier/Later`, `SeqTemporalSort`, `SeqRescaleTime` | pure data transformations whose exact arithmetic is established with Cakewalk Apprentice 1.04 oracles under Wine and tested here on Linux; reusable from any client |
 
 The device layer goes the other way: `SeqConfigMidi`, `SeqGetPortName`, the timer and the
 `midiIn`/`midiOut` calls are inside TTSSEQ, but in libsseq they belong to the application
@@ -130,6 +130,26 @@ the kind names (`Note`, `KeyAft`, `ChanAft`, `Contrl`, `Patch`, `Wheel`, `Sysx`,
 `Wave`), the Chn column (`n/a` for sysex and string events) and the Values column per kind. Patch
 names come from the General MIDI level 1 list in the MIDI specification, not from Cakewalk's
 PATCHES.INI. SMPTE display rounds to the nearest frame, as the Event list does.
+
+## 4b. Editing (v0.5)
+
+`sseq::edit` holds the Edit menu's commands as pure transformations of a `Sequence`. Each takes a
+`Selection` (stream numbers and a From..Thru range; an event is selected by its start time, both
+ends inclusive, as the oracle with From 2:01:000 Thru 3:01:000 showed) and an `EventFilter` (which
+kinds to touch; each command has its own default). Streams whose events moved are re-sorted with
+a stable sort, so events that land on the same tick keep their order.
+
+Quantize, as established with Cakewalk Apprentice 1.04 at 120 ppq (`tests/data/edit`):
+
+- Resolutions are whole .. thirty-second and the eighth, sixteenth and thirty-second triplets
+  (two thirds of the straight value): `resolutionTicks()`.
+- Starting times: `floor((t + res / 2) / res) * res` with integer `res / 2`, so exactly half rounds
+  up (offset 15 of 30 goes up; of 15, offset 7 goes down and 8 up). Strength moves the event that
+  percentage of the distance, truncated toward zero (723 → 722, 3615 → 3622 at 50 %).
+- Durations: `max(res, floor((d + res / 2) / res) * res) - 1`, so a note is never shorter than
+  `res - 1` and never exactly a multiple ("so that notes do not run into each other", the help
+  says). Strength does not apply to durations.
+- Without the event filter only notes are touched; other kinds keep their times.
 
 ## 5. Engine (v0.2)
 
@@ -237,6 +257,9 @@ the input path and whatever wrapper it wants on its side.
   checks the generator is reproducible, the Cakewalk files round-trip byte for byte, the model
   read from them equals the sequence they were generated from, and export and import agree with
   Cakewalk's. `tests/data/README.md` has the provenance; `gencorpus` regenerates `src/`.
+- Edit tests (`tests/edit_tests.cpp`, data in `tests/data/edit/`): the quantize arithmetic and
+  selection rules on hand-built sequences, then every Edit > Quantize oracle (`QUANT.WRK` after
+  Cakewalk's own command with the listed settings) compared event by event with ours.
 - `sseqtool dump|info|roundtrip|convert|normalize`.
 - Swift consumption: a thin C API or Swift C++ interop (Xcode 15+) wrapped in a SwiftPM
   package is the next step for the app.

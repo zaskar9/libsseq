@@ -324,9 +324,44 @@ static void test_transport_and_recorder(void) {
     sseq_sequence_free(s);
 }
 
+static void test_quantize(void) {
+    CHECK(sseq_resolution_ticks(SSEQ_RESOLUTION_SIXTEENTH, 120) == 30);
+    CHECK(sseq_resolution_ticks(SSEQ_RESOLUTION_EIGHTH_TRIPLET, 120) == 40);
+    CHECK(sseq_quantize_time(3615, 30, 100) == 3630);
+    CHECK(sseq_quantize_time(3615, 30, 50) == 3622);
+    CHECK(sseq_quantize_duration(44, 30) == 29);
+    CHECK(sseq_quantize_duration(45, 30) == 59);
+
+    sseq_sequence* s = sseq_sequence_new();
+    int t0 = sseq_sequence_add_stream(s, 0);
+    int t1 = sseq_sequence_add_stream(s, 1);
+    sseq_event a = note(29, 0, 60, 100, 10);
+    sseq_event b = note(29, 0, 62, 100, 10);
+    sseq_event c = note(241, 0, 64, 100, 47);
+    sseq_stream_insert_event(s, t0, &a);
+    sseq_stream_insert_event(s, t0, &c);
+    sseq_stream_insert_event(s, t1, &b);
+    sseq_quantize_options o = {30, 1, 1, 100, 0};
+    /* Only stream 1, only the first note's time range. */
+    int streams[1] = {t0};
+    sseq_selection sel = {streams, 1, 0, 100};
+    CHECK(sseq_quantize(s, &sel, &o) == 1);
+    sseq_event e;
+    CHECK(sseq_stream_event(s, t0, 0, &e) && e.time == 30 && e.duration == 29);
+    CHECK(sseq_stream_event(s, t0, 1, &e) && e.time == 241 && e.duration == 47);
+    CHECK(sseq_stream_event(s, t1, 0, &e) && e.time == 29);
+    /* Every stream, the whole range. */
+    sseq_selection all = {NULL, 0, 0, 1000};
+    CHECK(sseq_quantize(s, &all, &o) == 2);
+    CHECK(sseq_stream_event(s, t0, 1, &e) && e.time == 240 && e.duration == 59);
+    CHECK(sseq_stream_event(s, t1, 0, &e) && e.time == 30);
+    CHECK(sseq_quantize(s, NULL, &o) == -1);
+    sseq_sequence_free(s);
+}
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
-    CHECK(strcmp(sseq_version(), "0.4.1") == 0);
+    CHECK(strcmp(sseq_version(), "0.5.0") == 0);
     CHECK(strcmp(sseq_last_error(), "") == 0);
     test_sequence_and_files(dir);
     {
@@ -353,6 +388,7 @@ int main(int argc, char** argv) {
         sseq_event_values_text(&e, (const uint8_t*)"hi", 2, 120, text, sizeof text);
         CHECK(strcmp(text, "hi") == 0);
     }
+    test_quantize();
     test_transport_and_recorder();
     printf("C API tests: %d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

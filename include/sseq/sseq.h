@@ -30,7 +30,7 @@ typedef struct sseq_sequence sseq_sequence;
 typedef struct sseq_transport sseq_transport;
 typedef struct sseq_recorder sseq_recorder;
 
-const char* sseq_version(void); /* "0.4.0" */
+const char* sseq_version(void); /* "0.5.0" */
 /* The message of the last failure on this thread ("" when there was none). */
 const char* sseq_last_error(void);
 
@@ -267,6 +267,47 @@ const char* sseq_gm_percussion_name(int key);           /* channel 10 key names 
 void sseq_event_channel_text(const sseq_event* event, char* buffer, size_t size);
 void sseq_event_values_text(const sseq_event* event, const uint8_t* payload, size_t payload_size, int ppq, char* buffer,
                             size_t size);
+
+/* ---------------------------------------------------------------- editing (Edit menu) */
+
+/* The selected region: stream indices (file order, as elsewhere in this API; NULL with count 0
+ * means every stream) and the From..Thru time range. An event is in the region when its start
+ * time is between from and thru, both inclusive. */
+typedef struct {
+    const int* streams;
+    size_t stream_count;
+    sseq_tick from;
+    sseq_tick thru;
+} sseq_selection;
+
+/* The Quantize dialog's resolutions; triplets are two thirds of the straight value. */
+typedef enum {
+    SSEQ_RESOLUTION_WHOLE = 0,
+    SSEQ_RESOLUTION_HALF,
+    SSEQ_RESOLUTION_QUARTER,
+    SSEQ_RESOLUTION_EIGHTH,
+    SSEQ_RESOLUTION_EIGHTH_TRIPLET,
+    SSEQ_RESOLUTION_SIXTEENTH,
+    SSEQ_RESOLUTION_SIXTEENTH_TRIPLET,
+    SSEQ_RESOLUTION_THIRTY_SECOND,
+    SSEQ_RESOLUTION_THIRTY_SECOND_TRIPLET
+} sseq_resolution;
+sseq_tick sseq_resolution_ticks(sseq_resolution resolution, int ppq); /* sixteenth at 120 ppq = 30 */
+
+typedef struct {
+    sseq_tick resolution; /* ticks */
+    int start_times;      /* "Starting times" */
+    int durations;        /* "Durations" (notes) */
+    int strength;         /* "Percent strength", start times only */
+    uint32_t kinds;       /* event kinds to touch, bits (1u << sseq_event_kind); 0 = notes only */
+} sseq_quantize_options;
+
+/* The arithmetic alone: nearest multiple (exactly half rounds up), moved `strength` percent of the
+ * way truncated toward zero; durations to the nearest multiple, at least one, minus one tick. */
+sseq_tick sseq_quantize_time(sseq_tick time, sseq_tick resolution, int strength);
+sseq_tick sseq_quantize_duration(sseq_tick duration, sseq_tick resolution);
+/* Edit > Quantize on the region; returns the number of events changed (-1 on a bad argument). */
+int sseq_quantize(sseq_sequence* sequence, const sseq_selection* selection, const sseq_quantize_options* options);
 
 /* ---------------------------------------------------------------- sysex banks */
 
